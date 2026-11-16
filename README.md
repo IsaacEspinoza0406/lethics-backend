@@ -67,3 +67,17 @@ node test/replica.integration.cjs verify-and-clean
 ```
 
 Usa credenciales locales con caracteres codificados para URI y conserva el nombre de la base si una prueba falla para poder inspeccionarla. El usuario de prueba debe tener permisos para listar bases, crear colecciones y eliminarlas. El replica set de un nodo permite probar transacciones multipdocumento, pero no proporciona alta disponibilidad ni sustituye un despliegue de producción.
+
+## Pruebas de persistencia de identidad
+
+`npm test` ejecuta las pruebas unitarias sin MongoDB y omite la integración si no está configurada. Para ejecutar la integración, inicia el replica set local de prueba y ejecuta en PowerShell:
+
+```powershell
+$env:LETHICS_IDENTITY_TEST_URI = 'mongodb://USUARIO:CLAVE@localhost:27018/admin?authSource=admin&replicaSet=lethics-rs'
+npm test -- --runTestsByPath test/identity.integration.spec.ts
+Remove-Item Env:LETHICS_IDENTITY_TEST_URI
+```
+
+Sustituye las credenciales por las locales, codificadas para URI. La prueba acepta únicamente el servidor local en el puerto 27018, genera una base con UUID, verifica que no exista y la elimina al terminar solo si creó su marcador. Requiere permiso para listar bases, crear índices y eliminar esa base temporal. Los hashes usados son valores ficticios. Los índices de aplicación se declaran pero no se crean automáticamente al arrancar; hay que preparar su creación controlada antes de depender de la unicidad en una base real.
+
+Los esquemas exigen los datos mínimos de identidad y verifican la sintaxis del correo, pero no comprueban su propiedad ni la existencia de usuarios referenciados. La política de nulabilidad de los demás campos y la forma de perfil siguen pendientes. El procedimiento propuesto de instalación de índices y las limitaciones de serialización están en `docs/arquitectura.md`.
