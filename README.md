@@ -6,6 +6,16 @@ Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el 
 
 Node.js 22 LTS, npm y Docker con Compose. Desde la raíz, copia `.env.example` a `.env` y reemplaza los valores de usuario y contraseña por credenciales locales propias. Ajusta `MONGO_PORT` y el puerto correspondiente en `MONGODB_URI`; codifica para URI los caracteres especiales del usuario y contraseña. No compartas `.env`.
 
+La aplicación también requiere `JWT_ACCESS_SECRET_BASE64`, `JWT_ACCESS_ISSUER`, `JWT_ACCESS_AUDIENCE` y `JWT_ACCESS_TTL_SECONDS`. Genera una clave distinta de 32 bytes criptográficamente aleatorios por entorno; no uses la clave de otro proyecto. Por ejemplo, en PowerShell puedes asignarla a la sesión sin imprimirla:
+
+```powershell
+$bytesClave = [byte[]]::new(32)
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytesClave)
+$env:JWT_ACCESS_SECRET_BASE64 = [Convert]::ToBase64String($bytesClave)
+```
+
+Configura emisor, audiencia y duración en `.env`; el valor de 900 segundos del ejemplo es provisional. La clave debe suministrarse mediante un gestor de secretos o una variable local protegida, nunca compartirse o registrarse. La validación comprueba longitud, codificación y diversidad básica, pero no puede demostrar la entropía de la fuente. La configuración es obligatoria al iniciar aun cuando todavía no existan endpoints de autenticación.
+
 ```sh
 docker compose up -d
 docker compose ps
@@ -79,5 +89,7 @@ Remove-Item Env:LETHICS_IDENTITY_TEST_URI
 ```
 
 Sustituye las credenciales por las locales, codificadas para URI. La prueba acepta únicamente el servidor local en el puerto 27018, genera una base con UUID, verifica que no exista y la elimina al terminar solo si creó su marcador. Requiere permiso para listar bases, crear índices y eliminar esa base temporal. Los hashes usados son valores ficticios. Los índices de aplicación se declaran pero no se crean automáticamente al arrancar; hay que preparar su creación controlada antes de depender de la unicidad en una base real.
+
+Para ejecutar toda la suite con integración, primero ejecuta `npm run build`, configura `LETHICS_IDENTITY_TEST_URI` como arriba y después `npm test`. Además de la prueba de identidad, se arranca el backend compilado con una clave JWT aleatoria temporal en un proceso aislado; se comprueban health, Swagger y fallos de configuración sin leer ni sobrescribir el `.env` del proyecto. Sin esa variable se omiten los casos que requieren MongoDB. Los procesos normales de desarrollo sí leen `.env`, y las variables del entorno del proceso tienen prioridad.
 
 Los esquemas exigen los datos mínimos de identidad y verifican la sintaxis del correo, pero no comprueban su propiedad ni la existencia de usuarios referenciados. La política de nulabilidad de los demás campos y la forma de perfil siguen pendientes. El procedimiento propuesto de instalación de índices y las limitaciones de serialización están en `docs/arquitectura.md`.

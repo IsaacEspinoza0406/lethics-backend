@@ -5,6 +5,7 @@ import request from 'supertest';
 import { environmentSchema } from '../src/config/environment';
 import { configureApp } from '../src/configure-app';
 import { HealthController } from '../src/modules/health/health.controller';
+import { randomBytes } from 'node:crypto';
 
 @Controller('independent')
 class IndependentController {
@@ -14,9 +15,11 @@ class IndependentController {
 
 describe('Fundamentos', () => {
   it('valida la configuración requerida y los puertos', () => {
+    const security = { JWT_ACCESS_SECRET_BASE64: randomBytes(32).toString('base64'), JWT_ACCESS_ISSUER: 'test', JWT_ACCESS_AUDIENCE: 'test', JWT_ACCESS_TTL_SECONDS: 900 };
     expect(environmentSchema.validate({}).error).toBeDefined();
-    expect(environmentSchema.validate({ MONGODB_URI: 'mongodb://localhost/test', PORT: 70000 }).error).toBeDefined();
-    expect(environmentSchema.validate({ MONGODB_URI: 'mongodb://localhost/test', PORT: 3000 }).error).toBeUndefined();
+    expect(environmentSchema.validate({ ...security, MONGODB_URI: 'mongodb://localhost/test', PORT: 70000 }).error).toBeDefined();
+    expect(environmentSchema.validate({ ...security, MONGODB_URI: 'mongodb://localhost/test', PORT: 3000 }).error).toBeUndefined();
+    expect(environmentSchema.validate({ ...security, JWT_ACCESS_SECRET_BASE64: Buffer.alloc(32).toString('base64'), MONGODB_URI: 'mongodb://localhost/test' }).error).toBeDefined();
   });
 
   describe('HTTP health', () => {
