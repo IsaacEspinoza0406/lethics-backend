@@ -1,10 +1,16 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { Controller, Get, INestApplication, ServiceUnavailableException } from '@nestjs/common';
 import { getConnectionToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { environmentSchema } from '../src/config/environment';
-import { HttpExceptionFilter } from '../src/common/http-exception.filter';
+import { configureApp } from '../src/configure-app';
 import { HealthController } from '../src/modules/health/health.controller';
+
+@Controller('independent')
+class IndependentController {
+  @Get()
+  fail(): never { throw new ServiceUnavailableException('unrelated'); }
+}
 
 describe('Fundamentos', () => {
   it('valida la configuración requerida y los puertos', () => {
@@ -15,17 +21,16 @@ describe('Fundamentos', () => {
 
   describe('HTTP health', () => {
     let app: INestApplication;
-    const connection = { readyState: 1, db: { admin: () => ({ ping: async () => ({ ok: 1 }) }) } };
+    const ping = jest.fn(async () => ({ ok: 1 }));
+    const connection = { readyState: 1, db: { admin: () => ({ ping }) } };
 
     beforeAll(async () => {
       const module = await Test.createTestingModule({
-        controllers: [HealthController],
+        controllers: [HealthController, IndependentController],
         providers: [{ provide: getConnectionToken(), useValue: connection }],
       }).compile();
       app = module.createNestApplication();
-      app.setGlobalPrefix('api/v1');
-      app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
-      app.useGlobalFilters(new HttpExceptionFilter());
+      configureApp(app);
       await app.init();
     });
     afterAll(async () => app.close());
@@ -36,8 +41,21 @@ describe('Fundamentos', () => {
     it('distingue la caída de MongoDB', async () => {
       connection.readyState = 0;
       const response = await request(app.getHttpServer()).get('/api/v1/health').expect(503);
-      expect(response.body).toMatchObject({ api: 'up', mongodb: 'down', message: 'Error interno del servidor' });
+      expect(response.body).toMatchObject({ api: 'up', mongodb: 'down', message: 'MongoDB no disponible' });
       connection.readyState = 1;
+    });
+    it('oculta detalles cuando falla el ping', async () => {
+      ping.mockRejectedValueOnce(new Error('secret connection string'));
+      const response = await request(app.getHttpServer()).get('/api/v1/health').expect(503);
+      expect(response.body).toMatchObject({ api: 'up', mongodb: 'down' });
+      expect(JSON.stringify(response.body)).not.toContain('secret');
+    });
+    it('no atribuye otros errores HTTP a MongoDB', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/independent').expect(503);
+      expect(response.body).not.toHaveProperty('mongodb');
+      expect(response.body.message).toBe('Error interno del servidor');
+      const missing = await request(app.getHttpServer()).get('/api/v1/missing').expect(404);
+      expect(missing.body).not.toHaveProperty('mongodb');
     });
   });
 });
