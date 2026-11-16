@@ -11,6 +11,7 @@ export interface Usuario {
   verificadoEn?: Date | null;
   zonaHoraria?: string | null;
   creadoEn?: Date | null;
+  seguridadVerificacion?: { tokenActualId: Types.ObjectId; ultimaEmision: Date; emisionesInicio: Date; emisiones: number; fallosInicio: Date; fallos: number; revision: number };
 }
 
 export interface TokenCuenta {
@@ -21,6 +22,8 @@ export interface TokenCuenta {
   expiraEn: Date;
   usadoEn?: Date | null;
   revocadoEn?: Date | null;
+  intentosFallidos?: number;
+  versionHmac?: number;
 }
 
 export interface Sesion {
@@ -52,6 +55,7 @@ export const UsuarioSchema = new Schema<Usuario>({
   verificadoEn: Date,
   zonaHoraria: String,
   creadoEn: Date,
+  seguridadVerificacion: { type: new Schema({ tokenActualId: { type: Schema.Types.ObjectId, required: true }, ultimaEmision: { type: Date, required: true }, emisionesInicio: { type: Date, required: true }, emisiones: { type: Number, required: true, min: 0 }, fallosInicio: { type: Date, required: true }, fallos: { type: Number, required: true, min: 0 }, revision: { type: Number, required: true, min: 0 } }, { _id: false }), required: false },
 }, { collection: 'usuarios', versionKey: false, autoCreate: false, autoIndex: false, toJSON: hideSecret('contraseñaHash'), toObject: hideSecret('contraseñaHash') });
 UsuarioSchema.index({ correo: 1 }, { unique: true });
 
@@ -63,6 +67,8 @@ export const TokenCuentaSchema = new Schema<TokenCuenta>({
   expiraEn: { type: Date, required: true },
   usadoEn: Date,
   revocadoEn: Date,
+  intentosFallidos: { type: Number, min: 0, max: 5 },
+  versionHmac: Number,
 }, { collection: 'tokens_cuenta', versionKey: false, autoCreate: false, autoIndex: false, toJSON: hideSecret('tokenHash'), toObject: hideSecret('tokenHash') });
 TokenCuentaSchema.index({ tokenHash: 1 }, { unique: true });
 
