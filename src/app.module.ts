@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { environmentSchema } from './config/environment';
 import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './infrastructure/security/security.module';
+import { RateLimitModule } from './infrastructure/rate-limit/rate-limit.module';
 import { IdentityModule } from './modules/identity/identity.module';
 
 @Module({
@@ -15,6 +16,7 @@ import { IdentityModule } from './modules/identity/identity.module';
     }),
     HealthModule,
     SecurityModule,
+    RateLimitModule,
     IdentityModule,
   ],
 })

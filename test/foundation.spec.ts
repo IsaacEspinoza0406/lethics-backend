@@ -15,11 +15,14 @@ class IndependentController {
 
 describe('Fundamentos', () => {
   it('valida la configuración requerida y los puertos', () => {
-    const security = { JWT_ACCESS_SECRET_BASE64: randomBytes(32).toString('base64'), JWT_ACCESS_ISSUER: 'test', JWT_ACCESS_AUDIENCE: 'test', JWT_ACCESS_TTL_SECONDS: 900 };
+    const security = { JWT_ACCESS_SECRET_BASE64: randomBytes(32).toString('base64'), JWT_ACCESS_ISSUER: 'test', JWT_ACCESS_AUDIENCE: 'test', JWT_ACCESS_TTL_SECONDS: 900, VERIFICATION_CODE_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), RATE_LIMIT_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), REDIS_URL: 'redis://:test-only@localhost:6380' };
     expect(environmentSchema.validate({}).error).toBeDefined();
     expect(environmentSchema.validate({ ...security, MONGODB_URI: 'mongodb://localhost/test', PORT: 70000 }).error).toBeDefined();
     expect(environmentSchema.validate({ ...security, MONGODB_URI: 'mongodb://localhost/test', PORT: 3000 }).error).toBeUndefined();
     expect(environmentSchema.validate({ ...security, JWT_ACCESS_SECRET_BASE64: Buffer.alloc(32).toString('base64'), MONGODB_URI: 'mongodb://localhost/test' }).error).toBeDefined();
+    expect(environmentSchema.validate({ ...security, VERIFICATION_CODE_HMAC_KEY_BASE64: security.JWT_ACCESS_SECRET_BASE64, MONGODB_URI: 'mongodb://localhost/test' }).error).toBeDefined();
+    expect(environmentSchema.validate({ ...security, RATE_LIMIT_HMAC_KEY_BASE64: security.VERIFICATION_CODE_HMAC_KEY_BASE64, MONGODB_URI: 'mongodb://localhost/test' }).error).toBeDefined();
+    expect(environmentSchema.validate({ ...security, REDIS_URL: 'redis://localhost:6380', MONGODB_URI: 'mongodb://localhost/test' }).error).toBeDefined();
   });
 
   describe('HTTP health', () => {

@@ -43,10 +43,10 @@ integration('Arranque real compilado', () => {
   const secret = randomBytes(32).toString('base64');
   const cwd = resolve(process.cwd(), 'node_modules'); // No carga el .env del proyecto.
   const main = resolve(process.cwd(), 'dist/main.js');
-  const base: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test', MONGODB_URI: uri, JWT_ACCESS_SECRET_BASE64: secret, JWT_ACCESS_ISSUER: 'test-issuer', JWT_ACCESS_AUDIENCE: 'test-audience', JWT_ACCESS_TTL_SECONDS: '60' };
+  const base: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test', MONGODB_URI: uri, JWT_ACCESS_SECRET_BASE64: secret, JWT_ACCESS_ISSUER: 'test-issuer', JWT_ACCESS_AUDIENCE: 'test-audience', JWT_ACCESS_TTL_SECONDS: '60', VERIFICATION_CODE_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), RATE_LIMIT_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), REDIS_URL: 'redis://:test-only@localhost:6380' };
 
   it('rechaza configuración ausente o inválida sin divulgar la clave', () => {
-    for (const field of ['JWT_ACCESS_SECRET_BASE64', 'JWT_ACCESS_ISSUER', 'JWT_ACCESS_AUDIENCE', 'JWT_ACCESS_TTL_SECONDS']) {
+    for (const field of ['JWT_ACCESS_SECRET_BASE64', 'JWT_ACCESS_ISSUER', 'JWT_ACCESS_AUDIENCE', 'JWT_ACCESS_TTL_SECONDS', 'VERIFICATION_CODE_HMAC_KEY_BASE64', 'RATE_LIMIT_HMAC_KEY_BASE64', 'REDIS_URL']) {
       const env = { ...base };
       delete env[field];
       const child = spawnSync(process.execPath, [main], { cwd, env, encoding: 'utf8', timeout: 10000 });
@@ -64,7 +64,7 @@ integration('Arranque real compilado', () => {
       expect((child.stderr + child.stdout).includes(secret)).toBe(false);
       expect(child.stderr + child.stdout).not.toContain('clave-invalida');
     }
-  }, 60000);
+  }, 90000);
 
   it('inicia Nest contra MongoDB y no filtra la clave en HTTP ni Swagger', async () => {
     const server = createServer();
