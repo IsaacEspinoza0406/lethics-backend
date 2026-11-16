@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { environmentSchema } from './config/environment';
 import { HealthModule } from './modules/health/health.module';
+import { SecurityModule } from './infrastructure/security/security.module';
 import { IdentityModule } from './modules/identity/identity.module';
 
 @Module({
@@ -13,6 +14,7 @@ import { IdentityModule } from './modules/identity/identity.module';
       useFactory: (config: ConfigService) => ({ uri: config.getOrThrow<string>('MONGODB_URI'), serverSelectionTimeoutMS: 5000, retryAttempts: 3, retryDelay: 1000 }),
     }),
     HealthModule,
+    SecurityModule,
     IdentityModule,
   ],
 })
