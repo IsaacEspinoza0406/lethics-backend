@@ -1,0 +1,36 @@
+services:
+  mongodb-rs:
+    image: mongo:8.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?Set MONGO_INITDB_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?Set MONGO_INITDB_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:27018:27018"
+    volumes:
+      - mongodb_rs_data:/data/db
+      - mongodb_rs_key:/run/lethics-key
+      - ./docker/replica-entrypoint.sh:/opt/lethics/replica-entrypoint.sh:ro
+    entrypoint: ["bash", "/opt/lethics/replica-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --port 27018 -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'quit(db.adminCommand({ping:1}).ok && db.hello().isWritablePrimary ? 0 : 1)'" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  mongodb-rs-init:
+    image: mongo:8.0
+    restart: on-failure
+    network_mode: service:mongodb-rs
+    depends_on:
+      mongodb-rs:
+        condition: service_started
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?Set MONGO_INITDB_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?Set MONGO_INITDB_ROOT_PASSWORD in .env}
+    volumes:
+      - ./docker/replica-init.sh:/opt/lethics/replica-init.sh:ro
+    entrypoint: ["bash", "/opt/lethics/replica-init.sh"]
+volumes:
+  mongodb_rs_data:
+  mongodb_rs_key:

@@ -33,3 +33,37 @@ npm run lint
 npm test
 npm start
 ```
+
+## Replica set aislado para desarrollo en Windows
+
+El `compose.yaml` anterior conserva el MongoDB standalone y su volumen original. El archivo `compose.replica.yaml` es una alternativa independiente: usa MongoDB 8.0, el replica set `lethics-rs`, el puerto local fijo 27018 y volúmenes nuevos `mongodb_rs_data` y `mongodb_rs_key`, separados por nombre de proyecto Compose. La clave interna se genera una sola vez en el volumen de clave mediante OpenSSL y no se guarda en el repositorio. Conserva **ambos** volúmenes. El nodo se anuncia como `localhost:27018`, accesible desde Windows y desde el inicializador que comparte su red. Esta configuración está diseñada para Nest en el host; no ofrece resolución para un Nest en otro contenedor.
+
+En PowerShell, con Docker Desktop iniciado y desde esta carpeta:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+# Edita .env: cambia usuario y contraseña por valores locales propios.
+# Cambia MONGODB_URI al ejemplo del replica set y codifica caracteres especiales de las credenciales para URI.
+docker compose -f compose.replica.yaml config --quiet
+docker compose -f compose.replica.yaml up -d
+docker compose -f compose.replica.yaml ps -a
+docker compose -f compose.replica.yaml logs mongodb-rs-init
+npm ci
+npm run start:dev
+```
+
+El inicializador espera autenticación y crea el replica set solo si aún no existe. El healthcheck del contenedor exige un ping autenticado y que el nodo sea PRIMARY. Espera hasta ver `healthy`; `Invoke-RestMethod http://localhost:3000/api/v1/health` debe devolver `api: up` y `mongodb: up`. La API necesita una conexión inicial; si MongoDB cae después, health devuelve 503 con `api: up`, `mongodb: down` y el mensaje público `MongoDB no disponible`. Otros errores 5xx conservan un mensaje genérico. Swagger está en `/docs`.
+
+La URI de ejemplo usa valores ficticios. Cambiar las variables de credenciales después de inicializar el volumen no cambia el usuario ya creado. Conserva la clave y los datos juntos; no reemplaces, reinicialices ni migres el volumen anterior. Para detener los servicios sin borrar datos: `docker compose -f compose.replica.yaml down`. Nunca uses `down -v` para detenerlos. El respaldo y la restauración siguen el procedimiento anterior, adaptando los comandos al archivo Compose y al servicio `mongodb-rs`; ensaya la restauración en un entorno aislado. El archivo temporal del respaldo contiene datos sensibles.
+
+Para repetir la prueba manual de transacciones, usa una base inequívoca y nueva. La segunda orden valida persistencia después del reinicio y elimina únicamente esa base temporal, tras comprobar su contenido:
+
+```powershell
+$env:MONGODB_URI = 'mongodb://USUARIO:CLAVE@localhost:27018/lethics?authSource=admin&replicaSet=lethics-rs'
+$env:LETHICS_TEST_DB = 'lethics_test_' + [guid]::NewGuid().ToString('N')
+node test/replica.integration.cjs setup
+docker compose -f compose.replica.yaml restart mongodb-rs
+node test/replica.integration.cjs verify-and-clean
+```
+
+Usa credenciales locales con caracteres codificados para URI y conserva el nombre de la base si una prueba falla para poder inspeccionarla. El usuario de prueba debe tener permisos para listar bases, crear colecciones y eliminarlas. El replica set de un nodo permite probar transacciones multipdocumento, pero no proporciona alta disponibilidad ni sustituye un despliegue de producción.
