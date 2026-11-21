@@ -1,5 +1,46 @@
 # Lethics — Backend
 
+## Incremento 6: correo de extremo a extremo con Mailpit
+
+Se reutilizan el controlador, los casos de uso, el adaptador SMTP y la fábrica del incremento 5. No se cambia la activación pública de HTTP ni la configuración privada. Mailpit captura mensajes localmente; no se configura relay, forwarding ni entrega a Internet. Las pruebas usan exclusivamente destinatarios `example.test`.
+
+Requisitos adicionales: OpenSSL accesible mediante `PATH` o `OPENSSL_BIN`, Docker Desktop disponible y las conexiones locales de MongoDB/Redis existentes. En Windows también se detecta `C:/msys64/ucrt64/bin/openssl.exe`. No se requiere instalar dependencias npm adicionales.
+
+```powershell
+# Mantener abierta esta sesión; Ctrl+C elimina únicamente este entorno Mailpit.
+node scripts/mailpit.cjs serve
+```
+
+El script comprueba los puertos 1025 (SMTP) y 8025 (web/API) antes del arranque. Si están ocupados, informa los puertos alternativos elegidos. La interfaz se abre por defecto en `http://127.0.0.1:8025`; la API está en `/api/v1/messages`. Usa siempre la URL que imprime el script. Cada ejecución utiliza un proyecto Compose `lethics-mailpit-<UUID>` independiente con [compose.mailpit.yaml](compose.mailpit.yaml), imagen oficial `axllent/mailpit:v1.27`, puertos publicados exclusivamente en loopback y sin volúmenes persistentes. La base de captura reside en tmpfs; solo los certificados temporales se montan en lectura. MongoDB y Redis no forman parte de este Compose.
+
+El adaptador existente exige autenticación y TLS validado. Mailpit se configura con STARTTLS obligatorio y credenciales ficticias `mailpit` / `mailpit-local-only`. El script genera un certificado de dos días con SAN para `localhost`/`127.0.0.1`. Para una aplicación local autorizada, establece en su sesión los valores impresos por `serve`: `VERIFICATION_MAIL_TRANSPORT=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=<puerto elegido>`, `SMTP_SECURE=false`, `SMTP_USER=mailpit`, `SMTP_PASSWORD=mailpit-local-only`, `SMTP_FROM=verificacion@example.test` y `NODE_EXTRA_CA_CERTS=<certificado impreso>`. Node debe iniciarse después de definir esta última variable. `SMTP_SECURE=false` exige STARTTLS; no permite SMTP sin cifrar. No uses `NODE_TLS_REJECT_UNAUTHORIZED=0`. Estos comandos no habilitan los endpoints de la aplicación habitual.
+
+### Ejecución y aislamiento de las pruebas
+
+```powershell
+# Adaptador SMTP y flujo HTTP real contra un Mailpit nuevo y efímero:
+node scripts/mailpit.cjs test
+
+# Build y lint; después, una sola ejecución de npm test con todas las integraciones:
+npm run build
+npm run lint
+node scripts/mailpit.cjs suite
+```
+
+Los modos `test` y `suite` crean Mailpit, esperan su API, ejecutan Jest con `--detectOpenHandles` y eliminan su contenedor, red y certificados al terminar, también ante fallos normales de prueba. Si se fuerza la terminación del proceso o Docker deja de responder, usa el nombre UUID impreso para revisar y retirar exclusivamente ese proyecto; nunca ejecutes limpieza global de Docker ni borres volúmenes.
+
+Se reutilizan `LETHICS_IDENTITY_TEST_URI` y `LETHICS_REDIS_TEST_URL` cuando están definidas. Si faltan, el script lee únicamente las conexiones locales de la configuración privada, sin mostrar valores ni sobrescribir archivos, y deriva una URI semilla MongoDB con base `admin`. El helper existente genera una base UUID antes de conectarse, rechaza la base `lethics` y limita la limpieza a sus objetos exactos de base y cliente. Redis usa un namespace UUID exclusivo; las claves de cuota expiran por TTL, sin `FLUSHDB`, `FLUSHALL` ni borrado de cuotas ajenas. Los índices y documentos sintéticos se preparan solo dentro de la base temporal. El script no imprime secretos de MongoDB/Redis.
+
+La nueva [prueba Mailpit](test/mailpit.integration.spec.ts) opta explícitamente por la fábrica SMTP real hacia loopback; el resto conserva el adaptador simulado de `NODE_ENV=test`. Sin las variables Mailpit suministradas por el script, esta prueba se omite deliberadamente. Para validar el incremento completo sin omisiones utiliza `suite`, no un `npm test` sin entorno de integración.
+
+La prueba registra un estudiante por HTTP, comprueba el destinatario, asunto y texto recibido mediante la API, extrae el código sin imprimirlo y prueba reenvío inmediato bloqueado, emisión posterior y revocación del código anterior. Solo adelanta la antigüedad de la emisión en su documento sintético, sin reiniciar cuotas. Verifica la cuenta en MongoDB y rechaza reutilización. Comprueba ausencia de contraseña, código, hash y claves en logs/respuestas, y rechazo real de autenticación SMTP incorrecta sin entregar mensajes. Los escenarios HTTP de fallo cerrado y fallo posterior al commit siguen cubiertos por las pruebas existentes. Una respuesta genérica 202 solo confirma recepción de la solicitud; no declara entrega. Una cuenta sin verificar conserva `verificadoEn=null`; este incremento no añade rutas de contenido protegido ni credenciales de acceso.
+
+El adaptador de desarrollo deshabilitado rechaza el envío; no simula éxito ni habilita registro/reenvío públicos. El adaptador de pruebas mantiene mensajes en memoria. SMTP realiza una conexión y entrega al servidor configurado: con Mailpit, el mensaje queda capturado localmente y no llega a un buzón externo.
+
+Validación del incremento 6 (2026-11-21): build y lint aprobados; pruebas específicas SMTP/Mailpit: 12 aprobadas en 2 suites (14,822 s). Una sola ejecución final de `npm test -- --detectOpenHandles`: 148 aprobadas en 20 suites, 0 fallidas y 0 omitidas (95,224 s), sin advertencias de recursos abiertos. Se comprobó que quedaron 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados temporales. Las claves Redis de pruebas conservan su expiración automática por TTL. No se modificaron datos reales, volúmenes MongoDB/Redis, configuración privada ni la activación pública de HTTP. `git diff --check` pasó con advertencias de conversión LF/CRLF.
+
+Para producción siguen pendientes el transporte autorizado, identidad de remitente, DNS/SPF/DKIM/DMARC según el despliegue, custodia de secretos y certificados, y la decisión sobre recuperación de entregas después del commit sin cola durable. La aceptación SMTP en Mailpit no demuestra entrega a destinatarios externos ni elimina esos requisitos. Referencias: [imagen oficial](https://mailpit.axllent.org/docs/install/docker/), [STARTTLS y autenticación](https://mailpit.axllent.org/docs/configuration/smtp-authentication/), [API](https://mailpit.axllent.org/docs/api-v1/).
+
 Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones están en [arquitectura](docs/arquitectura.md). Incluye infraestructura de seguridad y contratos HTTP de registro/verificación con activación controlada; no implementa inicio de sesión. Las secciones de incrementos anteriores conservan su contexto histórico; el estado HTTP actual está en [Incremento 5](#incremento-5-endpoints-http-de-identidad).
 
 ## Requisitos
