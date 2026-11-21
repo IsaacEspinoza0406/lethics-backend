@@ -1,6 +1,6 @@
 import { VerificationMailer } from '../application/verification-mailer';
 
-/** Local non-delivery adapter. Never logs or retains verification codes. */
+/** Disabled transport: never simulate successful delivery outside tests. */
 export class DevelopmentVerificationMailer implements VerificationMailer {
-  async sendVerification(): Promise<void> { /* No external delivery. */ }
+  async sendVerification(): Promise<void> { throw new Error('Transporte de correo no configurado'); }
 }
