@@ -1,6 +1,6 @@
 # Lethics — Backend
 
-Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones de esta fase están en [arquitectura](docs/arquitectura.md). No incluye autenticación ni funcionalidades de negocio.
+Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones están en [arquitectura](docs/arquitectura.md). Incluye infraestructura de seguridad y contratos HTTP de registro/verificación con activación controlada; no implementa inicio de sesión. Las secciones de incrementos anteriores conservan su contexto histórico; el estado HTTP actual está en [Incremento 5](#incremento-5-endpoints-http-de-identidad).
 
 ## Requisitos
 
@@ -249,3 +249,74 @@ Archivos de este incremento:
 | Modificados: aplicación | [registration.service.ts](src/modules/identity/application/registration.service.ts), [verify-email.service.ts](src/modules/identity/application/verify-email.service.ts), [resend-verification.service.ts](src/modules/identity/application/resend-verification.service.ts), [identity.schemas.ts](src/modules/identity/infrastructure/schemas/identity.schemas.ts), [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts) |
 | Modificados: pruebas | [bootstrap.integration.spec.ts](test/bootstrap.integration.spec.ts), [identity.integration.spec.ts](test/identity.integration.spec.ts), [origin-rate-limit.spec.ts](test/origin-rate-limit.spec.ts), [redis.integration.spec.ts](test/redis.integration.spec.ts) |
 | Modificados: operación/documentación | [package.json](package.json), [README.md](README.md), [arquitectura.md](docs/arquitectura.md) (local, ignorado por Git) |
+
+## Incremento 5: endpoints HTTP de identidad
+
+**Implementado:** `AuthHttpModule` incorpora los contratos siguientes reutilizando `IdentityOperationsService`, registro/verificación/reenvío transaccionales y el limitador Redis. **Estado local verificado:** no existe activación explícita de HTTP ni selección/configuración SMTP; las tres rutas permanecen bloqueadas con 503 y ausentes de Swagger. No se editó `.env`, no se enviaron mensajes externos y no se prepararon índices en desarrollo.
+
+| Ruta POST | Entrada | Resultado con operación habilitada y disponible |
+|---|---|---|
+| `/api/v1/auth/register` | `nombre`, `correo`, `contraseña` | 202 `{"message":"Solicitud recibida."}` |
+| `/api/v1/auth/verify` | `correo`, `codigo` (string de seis dígitos) | 200 `{"message":"Correo verificado."}`; 400 si no puede verificarse |
+| `/api/v1/auth/resend` | `correo` | 202 `{"message":"Solicitud recibida."}` |
+
+Los DTO son independientes. Normalizan correo con trim/minúsculas; nombre se recorta y exige contenido. Se rechazan propiedades extra, incluido `rol`, en las tres rutas. El rol se asigna exclusivamente como `estudiante` en el servicio existente. Como límites de tamaño de entrada se admiten hasta 200 caracteres de nombre, 254 de correo y 1024 de contraseña; la contraseña no se recorta ni normaliza. No se introduce una nueva política de longitud mínima más allá de la entrada no vacía existente. No se devuelven usuarios, hashes, códigos, JWT ni sesiones.
+
+Registro y reenvío retornan el mismo 202 sin confirmar existencia, estado de cuenta, límites por cuenta ni entrega. Un duplicado concurrente de correo conserva esa respuesta. Correo inexistente/verificado, reenvío antes de 60 segundos y restricciones de cuenta no revelan su condición. Una incompatibilidad heredada conocida mantiene el bloqueo y la respuesta neutra de reenvío. La verificación utiliza el mismo 400 público para código incorrecto, vencido, consumido, revocado o restringido; errores de forma del DTO también son 400. Estos contratos evitan enumeración explícita por contenido/estado normal de respuesta; no garantizan tiempos de respuesta constantes, pues la escritura y el envío síncrono tienen costos diferentes.
+
+### Protección y activación
+
+El guard comprueba configuración, toma exclusivamente `request.socket.remoteAddress` y obtiene una autorización interna de la fachada tras consumir Redis. La autorización está vinculada a operación/origen/modo y se consume una sola vez; se guarda con un símbolo del servidor y nunca se acepta ni serializa desde el cliente. Así, los DTO inválidos también consumen cuota de origen y el caso de uso no la descuenta dos veces. Si Redis falla, no se consultan índices ni cuentas. No hay bypass en memoria.
+
+Después de Redis se comprueban en lectura los dos índices obligatorios antes de permitir operaciones sobre correos y tokens; registro conserva además su comprobación interna para los demás consumidores. Se rechazan ausencias, índices ocultos o incompatibilidades; no se instalan ni alteran índices. Se preservan transacciones, HMAC v2, propósito, expiración por reloj de servidor, consumo único, cinco fallos, 60 segundos, revocación previa y ventanas/cuotas persistentes. Reenviar no borra fallos de cuenta ni del token anterior; el nuevo token mantiene su contador propio, según el contrato existente.
+
+| Configuración | Comportamiento |
+|---|---|
+| `AUTH_HTTP_ENABLED=false` o ausente | Las tres rutas responden 503 y no aparecen en Swagger |
+| `AUTH_BEHIND_PROXY=true` | Las tres rutas bloqueadas; la política de proxies sigue sin implementarse |
+| HTTP activado, sin adaptador SMTP real | Registro/reenvío bloqueados; verify puede operar con índices, MongoDB y Redis válidos |
+| HTTP activado y SMTP configurado | Registro/reenvío comprueban además conexión/TLS/autenticación SMTP antes de escribir |
+| Redis, índices, MongoDB o comprobación SMTP indisponibles | 503 sanitizado mediante el filtro existente |
+| Cuota por origen excedida | 429 `Límite de solicitudes alcanzado`, antes de consultar cuentas |
+
+`AUTH_BEHIND_PROXY=false` solo corresponde a un despliegue directo cuya topología se haya comprobado. El cliente no controla ese indicador. No se procesan `X-Forwarded-For`, `Forwarded`, `X-Real-IP` ni `request.ip`; la normalización IPv4/IPv6 y el comportamiento fail closed siguen en el limitador existente. No se activa confianza global en proxies.
+
+Swagger publica únicamente rutas activadas por configuración y capacidad real del adaptador; un fallo posterior de infraestructura se informa con el 503 documentado. La documentación se construye al iniciar: los cambios operativos de configuración requieren reinicio del proceso. Verify no necesita SMTP para consumir un código existente, pero conserva todas las demás defensas. El 200 de verify no inicia sesión ni habilita acceso mediante credenciales; no se añadieron rutas educativas, login, refresh, logout, recuperación ni administración. Cualquier acceso futuro a contenido protegido deberá comprobar la verificación con autenticación/autorización propias.
+
+### SMTP independiente del proveedor
+
+Se agrega Nodemailer **10.6.1**, con tipos propios, sin cambiar las demás versiones. No se selecciona servicio comercial. Variables nuevas (solo marcadores comentados en `.env.example`):
+
+- `VERIFICATION_MAIL_TRANSPORT=disabled` por defecto; seleccionar `smtp` únicamente para un servidor autorizado.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` obligatorias al seleccionar SMTP.
+- `SMTP_SECURE=true` por defecto para TLS implícito (habitualmente 465). Para STARTTLS (habitualmente 587), usar false: el adaptador exige la actualización TLS, nunca continúa en claro. Los certificados se validan y se requiere TLS 1.2 o superior.
+
+El adaptador limita tiempos de conexión/saludo/socket/DNS; desactiva logs de protocolo, debug, pool y acceso a archivos/URLs. Emisor/destinatario y código se validan; el mensaje es texto fijo con código y vigencia, sin contenido HTML del cliente. Comprueba aceptación del destinatario por SMTP; esto no certifica entrega final a la bandeja. La comprobación previa verifica conexión, TLS y autenticación sin enviar un correo. Véase la [documentación oficial de SMTP de Nodemailer](https://nodemailer.com/smtp).
+
+En `NODE_ENV=test`, la fábrica siempre devuelve el buzón de pruebas y nunca construye una conexión SMTP real, aunque existan variables SMTP heredadas. Ese buzón no habilita registro/reenvío públicos. Los ensayos HTTP que necesitan esas rutas sustituyen explícitamente el transporte por un mock dentro del adaptador SMTP; todos los mensajes observados en esas pruebas son simulados. En desarrollo sin SMTP el adaptador deshabilitado ahora rechaza el envío, en lugar de descartarlo como si hubiera tenido éxito. Producción sin SMTP conserva el bloqueo de inicio existente.
+
+Si falla el SMTP antes de la transacción, la operación responde 503 y no escribe. Si falla después del commit, usuario/token permanecen guardados y sin verificar: se registra únicamente el evento fijo `Entrega de verificación no confirmada`, sin destinatario, código, credenciales ni excepción original. La respuesta sigue siendo 202 `Solicitud recibida.` para evitar enumeración; nunca afirma entrega. No hay cola durable, reintento automático ni nueva colección. La recuperación disponible es solicitar otro código después de 60 segundos, respetando cuotas; no se garantiza recuperación para cuentas heredadas incompatibles.
+
+### Validación y límites de este incremento
+
+Build y lint aprobados. Ejecución focalizada con `--detectOpenHandles`: **52 pruebas aprobadas, 0 fallidas, 0 omitidas, 7 suites**, 27.811 segundos. Se ejecutaron los cuatro archivos nuevos y las regresiones pertinentes de fachada, DTO/configuración HTTP; no se repitió toda la suite histórica. Incluye HTTP con servicios reales y MongoDB/Redis aislados: registro concurrente, rol fijo, consumo único, cinco fallos, 60 segundos, revocación y preservación de cuotas, y fallo SMTP posterior al commit. El transporte SMTP estuvo simulado, sin red ni correos externos. Sin variables seguras de integración se omiten los cuatro casos del archivo HTTP integrado; no se sustituyen por pruebas sobre `lethics`. La limpieza solo afecta el UUID propio y Redis usa namespace exclusivo con TTL, sin FLUSH ni borrado de cuotas reales. No se observaron recursos abiertos.
+
+Para repetir únicamente esta validación con las variables de prueba seguras ya configuradas:
+
+```powershell
+npm run build
+npm run lint
+npm test -- --runTestsByPath test/auth-http.spec.ts test/smtp-verification.spec.ts test/identity-http-permits.spec.ts test/auth-http.integration.spec.ts test/identity-operations.spec.ts test/verification-foundation.spec.ts test/foundation.spec.ts --detectOpenHandles
+```
+
+Pendiente antes de una activación real: SMTP/identidad del remitente autorizados y custodia de secretos, prueba controlada de entrega real fuera de las pruebas automáticas, preparación autorizada de índices y revisión de datos/heredados, aceptación o resolución del riesgo de entrega sin cola durable, topología directa segura/TLS/ACL y sincronización de relojes. No se tomaron estas decisiones ni se modificó infraestructura. La activación requiere que el operador configure explícitamente HTTP; no se realizó en este incremento.
+
+### Archivos del incremento 5
+
+| Estado | Archivos |
+|---|---|
+| Creados: HTTP | [auth-http.module.ts](src/modules/auth/auth-http.module.ts), [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [resend-verification.dto.ts](src/modules/identity/presentation/dto/resend-verification.dto.ts) |
+| Creados: correo | [smtp-verification-mailer.ts](src/modules/identity/infrastructure/smtp-verification-mailer.ts), [verification-mailer.factory.ts](src/modules/identity/infrastructure/verification-mailer.factory.ts) |
+| Creados: pruebas | [auth-http.spec.ts](test/auth-http.spec.ts), [auth-http.integration.spec.ts](test/auth-http.integration.spec.ts), [smtp-verification.spec.ts](test/smtp-verification.spec.ts), [identity-http-permits.spec.ts](test/identity-http-permits.spec.ts) |
+| Modificados: identidad | [identity.module.ts](src/modules/identity/identity.module.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [registration.service.ts](src/modules/identity/application/registration.service.ts), [resend-verification.service.ts](src/modules/identity/application/resend-verification.service.ts), [verify-email.service.ts](src/modules/identity/application/verify-email.service.ts) (comentario), [verification-mailer.ts](src/modules/identity/application/verification-mailer.ts), [development-verification-mailer.ts](src/modules/identity/infrastructure/development-verification-mailer.ts), [register.dto.ts](src/modules/identity/presentation/dto/register.dto.ts), [verify-email.dto.ts](src/modules/identity/presentation/dto/verify-email.dto.ts) |
+| Modificados: arranque/configuración | [app.module.ts](src/app.module.ts), [configure-app.ts](src/configure-app.ts), [environment.ts](src/config/environment.ts), [.env.example](.env.example), [package.json](package.json), [package-lock.json](package-lock.json), este README y [arquitectura.md](docs/arquitectura.md) (local, ignorado por Git) |
