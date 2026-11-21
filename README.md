@@ -66,17 +66,7 @@ El inicializador espera autenticación y crea el replica set solo si aún no exi
 
 La URI de ejemplo usa valores ficticios. Cambiar las variables de credenciales después de inicializar el volumen no cambia el usuario ya creado. Conserva la clave y los datos juntos; no reemplaces, reinicialices ni migres el volumen anterior. Para detener los servicios sin borrar datos: `docker compose -f compose.replica.yaml down`. Nunca uses `down -v` para detenerlos. El respaldo y la restauración siguen el procedimiento anterior, adaptando los comandos al archivo Compose y al servicio `mongodb-rs`; ensaya la restauración en un entorno aislado. El archivo temporal del respaldo contiene datos sensibles.
 
-Para repetir la prueba manual de transacciones, usa una base inequívoca y nueva. La segunda orden valida persistencia después del reinicio y elimina únicamente esa base temporal, tras comprobar su contenido:
-
-```powershell
-$env:MONGODB_URI = 'mongodb://USUARIO:CLAVE@localhost:27018/lethics?authSource=admin&replicaSet=lethics-rs'
-$env:LETHICS_TEST_DB = 'lethics_test_' + [guid]::NewGuid().ToString('N')
-node test/replica.integration.cjs setup
-docker compose -f compose.replica.yaml restart mongodb-rs
-node test/replica.integration.cjs verify-and-clean
-```
-
-Usa credenciales locales con caracteres codificados para URI y conserva el nombre de la base si una prueba falla para poder inspeccionarla. El usuario de prueba debe tener permisos para listar bases, crear colecciones y eliminarlas. El replica set de un nodo permite probar transacciones multipdocumento, pero no proporciona alta disponibilidad ni sustituye un despliegue de producción.
+La prueba manual histórica en dos ejecuciones está deshabilitada: no acredita propiedad de la base dentro de la misma ejecución que realiza la limpieza. El script termina antes de conectarse y explica la omisión. Usa las suites Jest aisladas para probar transacciones. No se ensaya persistencia tras reiniciar contenedores en este incremento. Un replica set de un nodo no proporciona alta disponibilidad ni sustituye un despliegue de producción.
 
 ## Pruebas de persistencia de identidad
 
@@ -88,7 +78,7 @@ npm test -- --runTestsByPath test/identity.integration.spec.ts
 Remove-Item Env:LETHICS_IDENTITY_TEST_URI
 ```
 
-Sustituye las credenciales por las locales, codificadas para URI. La prueba acepta únicamente el servidor local en el puerto 27018, genera una base con UUID, verifica que no exista y la elimina al terminar solo si creó su marcador. Requiere permiso para listar bases, crear índices y eliminar esa base temporal. Los hashes usados son valores ficticios. Los índices de aplicación se declaran pero no se crean automáticamente al arrancar; hay que preparar su creación controlada antes de depender de la unicidad en una base real.
+Sustituye las credenciales por las locales, codificadas para URI. La prueba acepta únicamente el servidor local en el puerto 27018, genera una base con UUID, verifica que no exista y la elimina al terminar solo si comprobó su propiedad y formato. Requiere permiso para listar bases, crear índices y eliminar esa base temporal. Los hashes usados son valores ficticios. Los índices de aplicación se declaran pero no se crean automáticamente al arrancar; su instalación controlada se describe en el incremento 4.
 
 Para ejecutar toda la suite con integración, primero ejecuta `npm run build`, configura `LETHICS_IDENTITY_TEST_URI` como arriba y después `npm test`. Además de la prueba de identidad, se arranca el backend compilado con una clave JWT aleatoria temporal en un proceso aislado; se comprueban health, Swagger y fallos de configuración sin leer ni sobrescribir el `.env` del proyecto. Sin esa variable se omiten los casos que requieren MongoDB. Los procesos normales de desarrollo sí leen `.env`, y las variables del entorno del proceso tienen prioridad.
 
@@ -138,4 +128,124 @@ El servicio acepta exclusivamente la dirección del socket y un indicador explí
 
 `IdentityModule` registra los casos internos y exporta `IdentityOperationsService`, que verifica Redis antes de invocar cada uno. Es una frontera interna, no un controlador: futuras rutas deben usarla y no acceder directamente a los servicios. En `development` el correo simulado descarta mensajes sin registrarlos; en `test` el buzón en memoria se puede inspeccionar solo desde pruebas. No se realiza entrega externa. En `production` el inicio falla hasta que exista un proveedor aprobado. La cuarentena Redis puede bloquear las operaciones una hora incluso tras un reinicio limpio; no se ha reducido, pues aún no existe una prueba de continuidad lo suficientemente fuerte.
 
-Para ejecutar la integración aislada de Redis, configura `LETHICS_REDIS_TEST_URL` para Redis local en el puerto 6380 y ejecuta `npm test`; usa una instancia de prueba, no Redis de producción. La prueba crea claves con nombre aleatorio y vencimiento. Sin la variable la integración Redis se omite.
+Para ejecutar la integración aislada de Redis, configura `LETHICS_REDIS_TEST_URL` para Redis local en el puerto 6380 y ejecuta `npm test`; usa un entorno autorizado de prueba. La prueba crea exclusivamente claves con namespace y HMAC aleatorios y vencimiento, sin borrar ni cambiar cuotas existentes ni configuración del servidor. Sin la variable la integración Redis se omite.
+
+## Fase 3B — Incremento 4: operación previa a HTTP
+
+**Implementado:** herramientas de inspección y ensayo; no hay rutas públicas register, verify o resend. No se ha ejecutado instalación ni migración sobre datos reales. `autoCreate` y `autoIndex` siguen deshabilitados en los esquemas de identidad. La configuración válida no constituye autorización para publicar HTTP.
+
+### Comprobaciones de solo lectura
+
+Después de `npm run build`, desde la raíz:
+
+```powershell
+npm run ops:config
+npm run ops:identity
+npm run ops:redis
+```
+
+Las herramientas cargan el `.env` privado sin editarlo; las variables del proceso tienen prioridad. No imprimen secretos, URI, correos, hashes ni documentos. Los fallos inesperados se sanitizan. `ops:config` informa validez y nombres de campos inválidos, nunca sus valores. `ops:identity` devuelve opciones de índices y cantidades de datos incompatibles y devuelve código 1 si hay bloqueos; errores de lectura/permisos también bloquean. Usa el destino indicado por `MONGODB_URI`. No crea colecciones, índices ni marcadores, ni ejecuta `syncIndexes`. `ops:redis` solo usa INFO y CONFIG GET; diferencia estado incierto, cuarentena y disponibilidad operativa, sin incrementar contadores.
+
+Diagnóstico observado el 2026-11-21: configuración local válida; Redis cumple las comprobaciones y terminó su cuarentena; en `lethics` faltan las colecciones `usuarios` y `tokens_cuenta`, por tanto sus índices. No se corrigió la base. Un conteo vacío sobre colecciones ausentes no prueba compatibilidad de un conjunto de datos heredado existente.
+
+### Índices obligatorios e instalación autorizada
+
+| Colección | Clave | Nombre requerido | Opciones |
+|---|---|---|---|
+| usuarios | `{correo: 1}` | `correo_1` | unique, collation simple, sin sparse/partial/TTL |
+| tokens_cuenta | `{tokenHash: 1}` | `tokenHash_1` | unique, collation simple, sin sparse/partial/TTL |
+
+Se acepta la definición histórica sin collation explícita cuando `listIndexes` indica semántica simple. Una collation heredada no simple se rechaza. Un nombre distinto requiere revisión operativa explícita; no se renombra automáticamente. Un índice con hidden: true se informa como incompatible y bloquea el registro; la herramienta no lo modifica. `_id_` lo administra MongoDB. Verificación localiza el token por `_id`; reenvío y revocación consultan por usuario. Un índice adicional por usuario/tipo podría mejorar rendimiento, pero requiere mediciones y no es requisito de unicidad de este incremento. No se agrega TTL, índice de sesiones ni índices educativos.
+
+El registro comprueba ambas definiciones antes de calcular contraseña, abrir transacción o enviar correo. Si falta un índice, es incompatible o la lectura falla, no registra. Es una defensa de aplicación; la cuenta de servicio debe carecer de permisos de DDL y el equipo debe impedir cambios administrativos concurrentes de índices.
+
+Para una instalación futura, autorizada y con ambas colecciones aprobadas **ya existentes**:
+
+1. Confirmar servidor/base por un canal protegido, permisos mínimos, autorización, respaldo y restauración ensayada. Detener todos los escritores durante inventario e instalación; mantener HTTP deshabilitado.
+2. Ejecutar `ops:identity`. Revisa índices existentes, campos ausentes/nulos/vacíos, sintaxis del correo, normalización trim/minúsculas y duplicados tras esa normalización. El análisis no devuelve valores. Usa memoria proporcional a los valores distintos; para grandes volúmenes ejecutar en una copia dimensionada y planificar una auditoría externa equivalente.
+3. Resolver datos inválidos/duplicados y colecciones ausentes mediante un cambio separado autorizado. Esta herramienta no crea colecciones ni modifica datos.
+4. Ejecutar `npm run ops:install-identity-indexes` desde una terminal interactiva. Revisa el informe y confirma escribiendo literalmente `INSTALL INDEXES <base>`. No admite confirmación por pipe ni una opción de aceptación automática. La confirmación declara autorización, escritores detenidos y respaldo comprobado.
+5. El instalador repite precondiciones, crea únicamente los dos índices y verifica el resultado. No elimina índices. Los dos comandos DDL no son una transacción: si falla el segundo puede quedar instalado el primero. Conservar bloqueo, inspeccionar y repetir únicamente después de resolver la causa. MongoDB rechaza duplicados concurrentes; las precondiciones requieren ventana de mantenimiento para evitar carreras de datos/configuración.
+6. Repetir `ops:identity` y registrar resultado sin datos personales. No habilitar HTTP solo por completar este paso.
+
+Nunca ejecutar el instalador sobre desarrollo sin autorización adicional. Su instalación se ensaya exclusivamente en bases temporales; los índices incompatibles no se eliminan ni siquiera para reparar automáticamente un ensayo.
+
+### Usuarios y tokens heredados: migración conservadora
+
+Los usuarios nuevos tienen `seguridadVerificacion` con `tokenActualId`, `ultimaEmision`, `emisionesInicio`, `emisiones`, `fallosInicio`, `fallos` y `revision`. Los tokens nuevos tienen `versionHmac: 2` e `intentosFallidos`. El estado válido requiere ObjectId, fechas válidas y contadores enteros no negativos. Los servicios rechazan estado parcial/inválido, además del estado ausente. El token requiere versión 2 y contador entero entre cero y cinco; cinco sigue bloqueando su consumo. No se completan campos silenciosamente.
+
+La función de ensayo `quarantineLegacyVerification` se limita por código a bases `lethics_ops_test_<UUID de 32 hex>` y confirmación exacta. En transacción revoca tokens de verificación activos con campos de seguridad incompatibles o usuario sin estado válido (incluye huérfanos). No toca recuperación, tokens ya usados/revocados, roles, `verificadoEn`, contadores de cuenta ni contadores de tokens. No genera códigos, no envía correo, no crea documentos ni colecciones. Repetir no cambia nuevamente los documentos. El inventario de solo lectura funciona también sobre el destino real.
+
+Este ensayo es una migración de **cuarentena**, no de activación. Las cuentas no verificadas sin estado válido continúan bloqueadas; una cuenta con verificadoEn de tipo Date válido no se cuenta como bloqueada por carecer de ese estado; un reenvío no reconstruye su historial ni garantiza recuperación. Las cuentas con estado válido y token antiguo necesitan asimismo revisión; se conservan sus cuotas y se revoca el token inseguro, sin prometer que puedan reenviar automáticamente.
+
+Antes de cualquier migración real:
+
+1. Aprobar inventario y política de recuperación de identidad/restricciones; detener todas las operaciones de identidad, registrar hora UTC, versión del código y cuotas vigentes, sincronizar relojes y mantener la ventana de mantenimiento.
+2. Obtener respaldo consistente de `usuarios` y `tokens_cuenta`, cifrado y fuera del repositorio; verificar integridad y restaurar en una base aislada. Retener evidencia de IDs afectados y estado previo en almacenamiento protegido del operador, nunca logs públicos.
+3. Ensayar la cuarentena sobre copia y comparar documentos: solo debe cambiar `revocadoEn` de verificaciones inseguras activas. Verificar idempotencia, transacción y preservación de estados/restricciones. La suite incluida utiliza datos sintéticos.
+4. Proponer por separado el ejecutor autorizado para base real: hoy no existe comando de migración real y la función lo rechaza. Revisar volumen, lotes y duración transaccional antes de adaptarla a datos reales.
+5. Para recuperar una cuenta sin garantías, exigir revisión autorizada de identidad/restricciones y una política aprobada de inicialización conservadora y espera de la mayor ventana previa/nueva. No asignar contadores cero ni crear un token ficticio para eludir el bloqueo. HMAC anterior no puede convertirse a v2 sin el código; requiere un flujo de nueva emisión aprobado. No activar automáticamente cuentas verificadas ni restringidas.
+6. Ante error, la transacción revierte. Tras commit, no restaurar tokens revocados a vigentes: restablecer datos íntegros desde respaldo solo en entorno aislado y reconciliar bajo mantenimiento. La recuperación segura de acceso es una nueva emisión autorizada cuando exista dicho flujo, no un rollback que reviva códigos. Conservar respaldo y evidencia hasta cerrar la revisión.
+
+### Origen y proxies
+
+**Activo:** socket directo (`request.socket.remoteAddress`) y modo configurado por servidor. El futuro adaptador HTTP debe usar ese dato, nunca `request.ip` bajo confianza implícita ni un booleano tomado del cuerpo/cabeceras. Express conserva su configuración inicial sin confianza global en proxies. IPv4 decimal válida se conserva; IPv6 se canoniza/comprime en minúsculas; IPv4 mapeada, decimal o hexadecimal, se unifica con IPv4. Se rechazan zonas `%`, puertos, listas, valores vacíos y direcciones inválidas. Se limita por dirección exacta; la agregación por prefijo IPv6 requiere decisión posterior por sus efectos sobre usuarios/NAT.
+
+**Propuesto y deshabilitado:** antes de un proxy, documentar cada salto y ruta alternativa, CIDR/IP exactos del ingress, aislamiento de red del backend, familia de direcciones, cabecera única y reglas de sustitución. El borde debe eliminar cabeceras aportadas por clientes y emitir su propia cadena. Validar el socket contra una lista explícita; recorrer cadenas de derecha a izquierda retirando solo saltos confiables y detenerse en el primer no confiable. No elegir el primer valor arbitrariamente ni confiar solo por cantidad de saltos cuando existan rutas distintas. Rechazar cadenas ambiguas, longitud excesiva, duplicados conflictivos o discrepancias entre cabeceras; normalizar cada dirección antes de compararla. `Forwarded` necesita parser estricto de comillas/IPv6 si fuera la cabecera elegida. Probar múltiples proxies, bypass directo y saltos no confiables con la topología real. No hay lista ni extractor proxy habilitados; `behindProxy=true` falla cerrado. Las cabeceras `X-Forwarded-For`, `Forwarded` y `X-Real-IP` no participan en el origen directo.
+
+### Redis: continuidad y cuarentena
+
+Se exige Redis primario, AOF habilitado, `appendfsync always`, `noeviction`, escritura y última reescritura AOF sin error, carga terminada y uptime al menos igual a la mayor ventana configurada (por defecto 3600 segundos). Se comprueba el `run_id` antes/después de EVAL; cambios o errores se traducen a indisponibilidad genérica sin bypass. Una cuarentena rechazada no ejecuta EVAL. Un EVAL que falla o cuyo resultado queda incierto puede haber consumido cuota: se conserva el rechazo.
+
+Un reinicio limpio con AOF recuperado **no** permite saltar la espera. El diagnóstico informa segundos restantes únicamente cuando el estado es comprobable; un estado incierto no se convierte en espera supuestamente segura. El uptime no detecta restauraciones/borrados administrativos, reemplazos antiguos o cambios de clave, namespace y cuotas. Ante esos cambios se requiere bloqueo externo coordinado durante la mayor ventana antigua/nueva; no rotar claves ni reinicializar Redis para recuperar disponibilidad.
+
+Propuesta pendiente: identidad de despliegue/generación y evidencia durable externa al Redis restaurable, con control de exclusión de escritores, checkpoints confirmados, reloj/antirollback, configuración vinculada y validación por todas las instancias. Solo una prueba de continuidad que cubra fallos y restauraciones podría distinguir un reinicio seguro y justificar otra política. No se implementó ni aprobó esa excepción. INFO/CONFIG GET exigen permisos ACL de lectura; denegarlos produce fallo cerrado. Definir TLS, ACL restringida a claves/operaciones necesarias, monitoreo de AOF y política de recuperación antes de producción.
+
+### Configuración y bloqueos antes de HTTP
+
+Desarrollo y test requieren MongoDB replica set para transacciones, las tres claves independientes canónicas de 32 bytes en base64, issuer/audience/TTL, HMAC de códigos, cuotas válidas, Redis autenticado y namespace. Las cuotas actuales se conservan. La validación detecta formato/diversidad básica y reutilización, pero no certifica entropía ni custodia de claves. `.env` no se modifica.
+
+Producción exige adicionalmente Redis TLS (`rediss://`) y namespace explícito diferente de `development`; el arranque continúa bloqueado sin proveedor de correo aprobado. Antes de publicar también deben verificarse índices y datos reales, recuperación de heredados, entrega durable e idempotente sin nueva colección no autorizada, topología/red/TLS/ACL y política de origen, obligatoriedad de fachada con limitador, contratos y mapeo HTTP que no revele existencia de cuentas, reloj sincronizado y observabilidad sanitizada. No existe un flag que publique parcialmente endpoints: los controladores siguen ausentes.
+
+### Pruebas seguras
+
+```powershell
+npm run build
+npm run lint
+npm test
+# Configurar las URI privadas sin mostrarlas; nunca copiar credenciales a documentación.
+# LETHICS_IDENTITY_TEST_URI: MongoDB local 27018, credenciales autorizadas de prueba.
+# LETHICS_REDIS_TEST_URL: Redis local 6380 de prueba autorizado.
+npm test -- --detectOpenHandles
+```
+
+Sin las variables se omiten los casos de integración externa. MongoDB usa nombres aleatorios `lethics_identity_test_*` y `lethics_ops_test_*`, comprueba que no existan y solo elimina bases propias con formato verificado. Usa exclusivamente nombres de colecciones aprobados (`usuarios`, `tokens_cuenta`, `sesiones`); se retiró el marcador de colección adicional de la prueba previa. El ensayo de índices incompatibles deja ese índice intacto hasta eliminar la base temporal completa. Nunca se ejecuta la antigua prueba manual de reinicio de contenedores como parte de esta suite. Redis usa namespace/HMAC aleatorios y TTL; no ejecuta FLUSH, DEL de cuotas reales, CONFIG SET, reinicios ni cambios de volúmenes. El arranque compilado usa entorno test y se espera el cierre del subproceso para evitar recursos abiertos.
+
+Resultado previo al refuerzo de aislamiento, verificado el 2026-11-21: `npm run build` y `npm run lint` aprobados. Suite `npm test -- --detectOpenHandles` con MongoDB y Redis configurados: **79 pruebas aprobadas, 0 fallidas, 0 omitidas; 13 suites aprobadas**, 92.83 segundos, sin advertencia de recursos abiertos. Incluye rollback de la primera revocación cuando falla la segunda y validación de claves independientes/producción. Sin variables externas, Jest omite las integraciones de infraestructura; las comprobaciones de solo lectura sobre la base real siguen informando los índices/colecciones ausentes.
+
+Protección adicional: [integration-isolation.ts](test/integration-isolation.ts) genera un UUID antes de conectar y rechaza URI MongoDB con base `lethics` (también codificada o en mayúsculas), destinos no locales/27018 y parámetros de sustitución de base. Configura una URI de prueba segura, por ejemplo con base `admin` y `authSource=admin`; no uses la URI de desarrollo terminada en `/lethics`. Cada suite, incluido el arranque compilado, recibe su URI temporal (`lethics_bootstrap_test_*` para arranque). El helper crea y administra su MongoClient temporal. La limpieza exige nombre UUID, ausencia inicial y la identidad exacta del cliente y del objeto Db creados por ese helper; no permite acreditar bases o conexiones externas mediante claim(); rechaza otra base/conexión y no adquiere permisos si falla la preparación. Una URI insegura omite la suite con motivo sanitizado antes de conectar. Redis genera un namespace `test_<aleatorio>` de hasta 32 caracteres sin aceptar overrides; las claves expiran solas, sin borrados. Nunca se ejecutan FLUSHDB ni FLUSHALL. La prueba manual antigua está bloqueada porque su limpieza entre ejecuciones no acredita propiedad.
+
+Archivos adicionales de protección de pruebas: [integration-isolation.ts](test/integration-isolation.ts), [integration-isolation.spec.ts](test/integration-isolation.spec.ts) y [replica.integration.cjs](test/replica.integration.cjs) (deshabilitado).
+
+Correcciones finales del incremento 4:
+
+- `inspectLegacySecurity().blockedUsers` cuenta exclusivamente cuentas no verificadas sin estado de verificación válido. Una fecha BSON/JavaScript Date válida en `verificadoEn` excluye la cuenta de ese conteo, incluso si el estado falta o es parcial. Un string o fecha inválida no acredita verificación. El inventario no modifica documentos ni concede acceso; el análisis de tokens inseguros y la cuarentena conservan sus reglas.
+- `compatibleIdentityIndex` rechaza `hidden: true` como incompatibilidad operativa, sin eliminar, revelar ni modificar el índice. Su remediación requiere un cambio autorizado separado.
+- El helper temporal crea su propio `MongoClient` mediante `open()` y devuelve el cliente/base vinculados. No admite conexiones externas mediante `claim`. Mongoose utiliza ese mismo cliente gestionado; cada ensayo adicional obtiene un scope y cliente nuevos. `cleanup(db, client)` exige identidad exacta de ambos y el nombre UUID; otra conexión al mismo nombre también se rechaza. `close()` limpia únicamente la base propia y cierra el cliente en finally; conexión fallida, colisión o inventario no confirmado no conceden propiedad. No se borra ninguna base si la preparación falla.
+- `mongodb` es dependencia directa fijada exactamente a **6.20.0** en manifiesto y lockfile. Es la misma versión instalada y compartida con Mongoose; no se actualizaron otras dependencias.
+
+Archivos de estas correcciones: [legacy-security.ts](src/modules/identity/infrastructure/legacy-security.ts), [identity-indexes.ts](src/modules/identity/infrastructure/identity-indexes.ts), [integration-isolation.ts](test/integration-isolation.ts), [integration-isolation.spec.ts](test/integration-isolation.spec.ts), [legacy-security.spec.ts](test/legacy-security.spec.ts) (nuevo), [identity-operations-safety.spec.ts](test/identity-operations-safety.spec.ts), [identity-ops.integration.spec.ts](test/identity-ops.integration.spec.ts), [identity.integration.spec.ts](test/identity.integration.spec.ts), [bootstrap.integration.spec.ts](test/bootstrap.integration.spec.ts), [package.json](package.json), [package-lock.json](package-lock.json), este README y [arquitectura.md](docs/arquitectura.md) (ignorado por Git).
+
+Validación de las correcciones finales: `npm run build` y `npm run lint` aprobados; `npm test -- --detectOpenHandles` con MongoDB/Redis aislados: **104 pruebas aprobadas, cero fallidas/omitidas, 15 suites**, 108.103 segundos, sin advertencias de recursos abiertos. `npm ls mongodb mongoose --all` confirma mongodb 6.20.0 directo y compartido con Mongoose, sin actualizaciones adicionales. Los resultados anteriores de 79/89 pruebas describen ejecuciones previas a estas correcciones.
+
+Verificación después del refuerzo: build y lint aprobados; `npm test -- --detectOpenHandles` con URI inicial de prueba `/admin` y destinos UUID generados por cada suite: **89 pruebas aprobadas, cero fallidas/omitidas; 14 suites aprobadas**, 96.809 segundos, sin advertencia de recursos abiertos. Las 10 pruebas nuevas de aislamiento no necesitan conexión externa. El ensayo manual de reinicio/limpieza entre procesos se omite deliberadamente porque no satisface propiedad dentro de la misma ejecución.
+
+Archivos de este incremento:
+
+| Estado | Archivos |
+|---|---|
+| Creados: operación | [identity-indexes.ts](src/modules/identity/infrastructure/identity-indexes.ts), [legacy-security.ts](src/modules/identity/infrastructure/legacy-security.ts), [redis-readiness.ts](src/infrastructure/rate-limit/redis-readiness.ts), [identity-ops.cli.ts](src/operations/identity-ops.cli.ts) |
+| Creados: pruebas | [identity-operations-safety.spec.ts](test/identity-operations-safety.spec.ts), [identity-ops.integration.spec.ts](test/identity-ops.integration.spec.ts), [redis-fail-closed.spec.ts](test/redis-fail-closed.spec.ts), [redis-readiness.spec.ts](test/redis-readiness.spec.ts) |
+| Modificados: aplicación | [registration.service.ts](src/modules/identity/application/registration.service.ts), [verify-email.service.ts](src/modules/identity/application/verify-email.service.ts), [resend-verification.service.ts](src/modules/identity/application/resend-verification.service.ts), [identity.schemas.ts](src/modules/identity/infrastructure/schemas/identity.schemas.ts), [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts) |
+| Modificados: pruebas | [bootstrap.integration.spec.ts](test/bootstrap.integration.spec.ts), [identity.integration.spec.ts](test/identity.integration.spec.ts), [origin-rate-limit.spec.ts](test/origin-rate-limit.spec.ts), [redis.integration.spec.ts](test/redis.integration.spec.ts) |
+| Modificados: operación/documentación | [package.json](package.json), [README.md](README.md), [arquitectura.md](docs/arquitectura.md) (local, ignorado por Git) |
