@@ -2,7 +2,9 @@ import { ConfigService } from '@nestjs/config';
 import { OnApplicationShutdown } from '@nestjs/common';
 import { createTransport, SendMailOptions } from 'nodemailer';
 import { isEmail } from 'class-validator';
+import { randomUUID } from 'node:crypto';
 import { VerificationDeliveryError, VerificationMailer } from '../application/verification-mailer';
+import { classifySmtpFailure, smtpDeliveryPolicy } from './smtp-delivery-policy';
 
 export interface VerificationSmtpTransport {
   verify(): Promise<boolean>;
@@ -14,6 +16,7 @@ export interface VerificationSmtpTransport {
 export class SmtpVerificationMailer implements VerificationMailer, OnApplicationShutdown {
   private readonly transport: VerificationSmtpTransport;
   private readonly from: string;
+  private stopped = false;
 
   constructor(config: ConfigService) {
     const host = config.getOrThrow<string>('SMTP_HOST');
@@ -33,18 +36,33 @@ export class SmtpVerificationMailer implements VerificationMailer, OnApplication
 
   /** Checks connection/TLS/authentication, not delivery or ownership of a recipient. */
   async assertAvailable(): Promise<void> {
-    try { if (await this.transport.verify() !== true) throw new Error('Transporte no disponible'); }
+    try { if (this.stopped || await this.transport.verify() !== true) throw new Error('Transporte no disponible'); }
     catch { throw new VerificationDeliveryError(); }
   }
 
   async sendVerification(recipient: string, code: string): Promise<void> {
     try {
       if (!isEmail(recipient) || /[\r\n]/.test(recipient) || !/^[0-9]{6}$/.test(code)) throw new Error('Mensaje inválido');
-      const result = await this.transport.sendMail({ from: this.from, to: recipient,
-        subject: 'Verificación de correo — Lethics', text: `Tu código de verificación es ${code}. Vence en cinco minutos. Si no solicitaste este código, ignora este mensaje.` });
-      if (result.rejected.length || !result.accepted.some((value) => typeof value === 'string' && value.toLowerCase() === recipient.toLowerCase())) throw new Error('Entrega no aceptada');
+      // Stable within this invocation only. Message-ID does not provide SMTP deduplication.
+      const message: SendMailOptions = { from: this.from, to: recipient, date: new Date(),
+        messageId: `<${randomUUID()}@${this.from.split('@')[1]}>`,
+        subject: 'Verificación de correo — Lethics', text: `Tu código de verificación es ${code}. Vence en cinco minutos. Si no solicitaste este código, ignora este mensaje.` };
+      const started = performance.now();
+      for (let attempt = 1; attempt <= smtpDeliveryPolicy.maxAttempts; attempt++) {
+        if (this.stopped) throw new VerificationDeliveryError();
+        try {
+          const result = await this.transport.sendMail({ ...message });
+          if (result.rejected.length || !result.accepted.some((value) => typeof value === 'string' && value.toLowerCase() === recipient.toLowerCase())) throw new VerificationDeliveryError();
+          return; // Accepted by SMTP; no assertion about inbox delivery or reading.
+        } catch (error) {
+          if (!classifySmtpFailure(error).retryable || attempt === smtpDeliveryPolicy.maxAttempts ||
+              performance.now() - started + smtpDeliveryPolicy.retryDelayMs >= smtpDeliveryPolicy.retryWindowMs) throw new VerificationDeliveryError();
+          await new Promise<void>((done) => setTimeout(done, smtpDeliveryPolicy.retryDelayMs));
+          if (performance.now() - started >= smtpDeliveryPolicy.retryWindowMs) throw new VerificationDeliveryError();
+        }
+      }
     } catch { throw new VerificationDeliveryError(); }
   }
 
-  onApplicationShutdown(): void { this.transport.close(); }
+  onApplicationShutdown(): void { this.stopped = true; this.transport.close(); }
 }
