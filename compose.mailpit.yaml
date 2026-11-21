@@ -1,0 +1,28 @@
+services:
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${LETHICS_MAILPIT_SMTP_PORT:?required}:1025"
+      - "127.0.0.1:${LETHICS_MAILPIT_HTTP_PORT:?required}:8025"
+    environment:
+      MP_DATABASE: /tmp/mailpit.db
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_SMTP_TLS_CERT: /certs/cert.pem
+      MP_SMTP_TLS_KEY: /certs/key.pem
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+      MP_SMTP_AUTH: mailpit:mailpit-local-only
+      MP_MAX_MESSAGES: "100"
+    volumes:
+      - type: bind
+        source: ${LETHICS_MAILPIT_CERT_DIR:?required}
+        target: /certs
+        read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - capture
+networks:
+  capture:
+    driver: bridge
