@@ -1,5 +1,48 @@
 # Lethics — Backend
 
+## Incremento 7: confiabilidad de correo
+
+El envío continúa después del commit de usuario/token. Antes de este incremento se realizaba una sola llamada SMTP: un fallo dejaba la cuenta sin verificar y el token vigente, sin recuperación automática. Ahora el [adaptador existente](src/modules/identity/infrastructure/smtp-verification-mailer.ts) aplica una [política conservadora](src/modules/identity/infrastructure/smtp-delivery-policy.ts) de **dos intentos como máximo** por invocación, con una sola espera de **500 ms**. No se reejecutan registro, transacciones ni generación de códigos; no se descuentan emisiones o solicitudes adicionales por reintentar SMTP.
+
+| Fallo observado en Nodemailer 10.6.1 | Clasificación y actuación |
+|---|---|
+| `ESOCKET`, `originalCode=ECONNREFUSED`, `command=CONN` | Conexión rechazada antes del mensaje: admite un reintento. |
+| `EDNS`, `originalCode=EAI_AGAIN`, `command=CONN` | Resolución temporal antes de conectar: admite un reintento. |
+| `ETIMEDOUT`, `command=CONN`, `timeoutType=CONNECT_TIMEOUT` o `GREETING_TIMEOUT` | Fase anterior al mensaje demostrada: admite un reintento. |
+| Respuesta SMTP 4xx con `EENVELOPE` en `MAIL FROM`/`RCPT TO`, o `EPROTOCOL`/`ECONNECTION` en `EHLO`/`HELO` | Rechazo temporal explícito anterior a DATA: admite un reintento. |
+| Autenticación, incluso una respuesta temporal de AUTH; configuración, TLS/certificados; DNS permanente | No reintentar automáticamente; corregir la causa fuera de la solicitud. |
+| Respuesta 5xx, incluido destinatario rechazado | Rechazo permanente: no reintentar. |
+| Rechazo explícito durante DATA | Se conserva una política más restrictiva: no reintentar, incluso con 4xx. |
+| Timeout de socket, reset, desconexión genérica `CONN`, respuesta incompleta o error desconocido | Resultado incierto: detener los reintentos. Puede haberse aceptado el mensaje. |
+
+La clasificación usa metadatos del transporte, nunca búsquedas en el texto de un error ni la mera etiqueta «transitorio». `CONN` también aparece en fallos después de DATA y no acredita por sí solo que el mensaje no fue transmitido. Metadatos ausentes o distintos de los contemplados no habilitan reintentos. Al actualizar Nodemailer debe validarse de nuevo este contrato.
+
+Se mantienen los timeouts existentes: DNS, conexión y saludo de 5 s cada uno; socket inactivo de 10 s. Solo se admite iniciar el reintento dentro de los primeros **15 s**, medidos con reloj monotónico, incluyendo su espera. Esta ventana no cancela una operación SMTP ya iniciada ni es un timeout total de la solicitud. Los timeouts son de fase/inactividad; un servidor que progresa lentamente puede prolongar el tiempo total. No se introducen cancelaciones que conviertan una entrega aceptada en un reintento. La comprobación HTTP previa `assertAvailable()` sigue siendo una sola operación sin envío: si falla, retorna 503 antes de escribir identidad. Al solicitar cierre del adaptador no se inicia otro intento.
+
+Cada invocación construye una sola vez destinatario, código, fecha, cuerpo y un Message-ID UUID independiente de los secretos. Los conserva durante su eventual reintento; un reenvío explícito obtiene otro código y Message-ID. **Message-ID permite correlación, no deduplicación SMTP.** No se reintenta una aceptación ni un resultado incierto; no se ofrece garantía de exactamente una entrega. Un timeout tras el terminador DATA puede significar que el servidor aceptó el correo y se perdió el 250 final. Referencia: [RFC 5321, respuestas tras DATA y timeouts](https://www.rfc-editor.org/rfc/rfc5321.html#section-4.2.5).
+
+La aceptación SMTP solo indica que el servidor aceptó responsabilidad; no confirma entrega al buzón, ausencia de filtrado, ni lectura. `VerificationDeliveryError` sigue siendo genérico, sin respuesta SMTP original, credenciales ni código. El controlador conserva 202 `Solicitud recibida.` después de un fallo postcommit: confirma recepción de la solicitud, no envío exitoso; el evento de log permanece fijo. El adaptador solo resuelve exitosamente si el destinatario figura aceptado y no hay rechazos. Una cuenta no se verifica por enviar correo: necesita consumir su código mediante el caso de uso existente.
+
+Un fallo o corte de proceso no revierte identidad ni extiende la vigencia de cinco minutos. El token permanece vigente hasta expiración, consumo o revocación; puede haber sido recibido aunque el transporte haya fallado. Reenvío explícito sigue exigiendo 60 s y cuotas persistentes, revoca los códigos anteriores y no restablece los fallos acumulados. No se recrea estado ni se reenvía automáticamente al reiniciar el backend.
+
+### Recuperación durable: propuesta pendiente de aprobación
+
+La memoria del proceso contiene el código; MongoDB solo conserva su HMAC, que no permite reconstruirlo. Si Nest se detiene después del commit y antes del envío, se pierde la posibilidad de enviar ese mismo código automáticamente. Un corte después de la aceptación SMTP pero antes de registrar su resultado deja además una ventana de incertidumbre. La implementación actual ofrece reintentos dentro del proceso, **no entrega durable**.
+
+Si se requiere recuperar emisiones después de reinicios, se recomienda una outbox transaccional y un worker, en un incremento aprobado por separado. Propuesta de nueva colección `entregas_verificacion` (no creada): identificador de entrega, referencia a usuario/token y propósito, Message-ID estable, payload cifrado autenticado con clave independiente y versión de clave, expiración ligada al token, estado, intentos, próxima ejecución y lease con fencing para exclusión entre workers. Insertar el trabajo en la misma transacción que usuario/token; índices de unicidad por emisión/token y de planificación/lease, más política aprobada de retención. No almacenar contraseña ni código en claro, ni usar `tokens_cuenta` como cola.
+
+El worker comprobaría cuenta sin verificar y token vigente/no revocado/no usado antes de intentar enviar; una revocación concurrente aún podría producir un correo tardío, pero su código no sería válido. Trabajos vencidos o cancelados no deben renovar códigos ni cuotas. La outbox permite recuperar trabajos pendientes confirmados, pero no elimina la incertidumbre entre SMTP y MongoDB: un lease vencido tras un intento puede corresponder a una entrega aceptada. Ese estado necesita conciliación y una política explícita; Message-ID no hace segura su repetición automática. Requiere aprobar el modelo, cifrado/rotación, retención, operación del worker y tratamiento de duplicados antes de implementar. No se añadió colección, cola ni campo de entrega.
+
+### Pruebas y alcance del cierre
+
+`node scripts/mailpit.cjs test` ejecuta las pruebas específicas del adaptador, política, HTTP con MongoDB/Redis aislados y Mailpit. Incluye un receptor SMTP TLS de fallos exclusivamente local: rechazo 451 anterior a DATA seguido de aceptación, rechazo permanente 550 y recepción completa de DATA seguida de desconexión o de falta del 250 hasta agotar el timeout real del cliente. Estos receptores no realizan entregas externas. Las pruebas comprueban límites de intentos, Message-ID/código estables, ventana de reintento y cierre durante espera, consistencia usuario/token/cuotas, recuperación por reenvío y ausencia de secretos en logs/respuestas. Se mantienen las pruebas de aceptación real en Mailpit y credenciales incorrectas. Solo se usan direcciones `example.test` en estos escenarios.
+
+La regresión completa se ejecuta una vez al finalizar con `node scripts/mailpit.cjs suite` (invoca `npm test -- --detectOpenHandles`). Los helpers existentes conservan bases MongoDB UUID propias y namespaces Redis exclusivos con TTL. No se habilitan rutas públicas ni se modifican volúmenes o datos reales.
+
+Validación final del incremento 7 (2026-11-21): build y lint aprobados. Pruebas específicas: 51 aprobadas en 4 suites, 0 fallidas/omitidas (39,992 s). Única ejecución completa final: **183 pruebas aprobadas en 21 suites, 0 fallidas y 0 omitidas** (109,972 s), con `--detectOpenHandles` y sin advertencias de recursos abiertos. Limpieza comprobada: 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados; Compose confirmó eliminación de su red. Redis conserva solo claves aisladas con expiración por TTL. `git diff --check` pasó con advertencias LF/CRLF. No se modificaron configuración privada, datos reales, volúmenes ni activación pública; no se realizaron escrituras de Git.
+
+El cierre técnico del incremento se determina por build, lint y pruebas. El cierre operativo de Fase 3B requiere decidir y aceptar explícitamente la limitación de entrega no durable, o aprobar su resolución posterior, además de las precondiciones de despliegue ya documentadas. Para producción se mantienen transporte/remitente autorizados, SPF/DKIM/DMARC según el despliegue, custodia de claves/TLS, monitoreo de aceptación/rechazos y tratamiento de rebotes. No se declara recuperación tras reinicios ni entrega a buzón a partir de esta prueba local.
+
 ## Incremento 6: correo de extremo a extremo con Mailpit
 
 Se reutilizan el controlador, los casos de uso, el adaptador SMTP y la fábrica del incremento 5. No se cambia la activación pública de HTTP ni la configuración privada. Mailpit captura mensajes localmente; no se configura relay, forwarding ni entrega a Internet. Las pruebas usan exclusivamente destinatarios `example.test`.
