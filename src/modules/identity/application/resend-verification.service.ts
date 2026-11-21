@@ -1,10 +1,11 @@
 import { Connection, Model, Types } from 'mongoose';
 import { TokenCuenta, Usuario } from '../infrastructure/schemas/identity.schemas';
 import { VerificationCodeService } from '../infrastructure/verification-code.service';
-import { VerificationMailer } from './verification-mailer';
+import { VerificationDeliveryError, VerificationMailer, VerificationStateUnavailableError } from './verification-mailer';
 import { defaultVerificationPolicy, VerificationPolicy } from './verification-policy';
+import { validVerificationState, validVerificationToken } from '../infrastructure/legacy-security';
 
-/** Internal only: per-origin abuse controls are required before exposure. */
+/** Use case: callers must enforce origin controls; account quotas stay persistent here. */
 export class ResendVerificationService {
   constructor(private readonly connection: Connection, private readonly users: Model<Usuario>, private readonly tokens: Model<TokenCuenta>, private readonly codes: VerificationCodeService, private readonly mailer: VerificationMailer, private readonly policy: VerificationPolicy = defaultVerificationPolicy, private readonly clock: () => Date = () => new Date()) {}
 
@@ -17,7 +18,7 @@ export class ResendVerificationService {
         codeToSend = undefined;
         const now = this.clock();
         const user = await this.users.findOneAndUpdate({ correo: normalized, verificadoEn: null, 'seguridadVerificacion.revision': { $gte: 0 } }, { $inc: { 'seguridadVerificacion.revision': 1 } }, { session, new: true });
-        if (!user?.seguridadVerificacion) return;
+        if (!user?.seguridadVerificacion || !validVerificationState(user.seguridadVerificacion)) return;
         const state = user.seguridadVerificacion;
         if (now.getTime() - state.ultimaEmision.getTime() < 60_000) return;
         const reset = now.getTime() - state.emisionesInicio.getTime() >= 3_600_000;
@@ -25,7 +26,7 @@ export class ResendVerificationService {
         if (emissions >= this.policy.maxEmissionsPerHour) return;
         const tokenId = new Types.ObjectId();
         const previous = await this.tokens.findOne({ _id: state.tokenActualId, usuarioId: user._id, versionHmac: 2 }).select('+tokenHash').session(session);
-        if (!previous) throw new Error('Estado de verificación requiere migración');
+        if (!previous || !validVerificationToken(previous.toObject())) throw new VerificationStateUnavailableError();
         let code = '';
         for (let attempt = 0; attempt < 16; attempt++) {
           const candidate = this.codes.generate();
@@ -39,7 +40,7 @@ export class ResendVerificationService {
       });
     } finally { await session.endSession(); }
     if (codeToSend) {
-      try { await this.mailer.sendVerification(normalized, codeToSend); } catch { throw new Error('No se pudo procesar el envío'); }
+      try { await this.mailer.sendVerification(normalized, codeToSend); } catch { throw new VerificationDeliveryError(); }
     }
   }
 }

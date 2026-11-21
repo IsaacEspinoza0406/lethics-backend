@@ -3,6 +3,15 @@ import * as Joi from 'joi';
 export const environmentSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
   PORT: Joi.number().port().default(3000),
+  AUTH_HTTP_ENABLED: Joi.boolean().default(false),
+  AUTH_BEHIND_PROXY: Joi.boolean().default(false),
+  VERIFICATION_MAIL_TRANSPORT: Joi.string().valid('disabled', 'smtp').default('disabled'),
+  SMTP_HOST: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.string().hostname().required(), otherwise: Joi.string().optional() }),
+  SMTP_PORT: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.number().integer().min(1).max(65535).required(), otherwise: Joi.number().optional() }),
+  SMTP_SECURE: Joi.boolean().default(true),
+  SMTP_USER: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.string().required(), otherwise: Joi.string().optional() }),
+  SMTP_PASSWORD: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.string().required(), otherwise: Joi.string().optional() }),
+  SMTP_FROM: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.string().email({ tlds: { allow: false } }).required(), otherwise: Joi.string().optional() }),
   MONGODB_URI: Joi.string().uri({ scheme: ['mongodb', 'mongodb+srv'] }).required(),
   JWT_ACCESS_SECRET_BASE64: Joi.string().required().custom((value: string, helpers) => {
     const bytes = Buffer.from(value, 'base64');

@@ -2,7 +2,8 @@ import { Connection, Model, Types } from 'mongoose';
 import { PasswordService } from '../../../infrastructure/security/password.service';
 import { TokenCuenta, Usuario } from '../infrastructure/schemas/identity.schemas';
 import { VerificationCodeService } from '../infrastructure/verification-code.service';
-import { VerificationMailer } from './verification-mailer';
+import { VerificationDeliveryError, VerificationMailer } from './verification-mailer';
+import { compatibleIdentityIndex } from '../infrastructure/identity-indexes';
 
 /** Internal use case: no HTTP route; callers must enforce shared abuse controls. */
 export class RegistrationService {
@@ -18,8 +19,8 @@ export class RegistrationService {
   async register(input: { nombre: string; correo: string; contraseña: string }): Promise<void> {
     // Do not trust a schema declaration: the unique indexes must already exist.
     const [userIndexes, tokenIndexes] = await Promise.all([this.users.collection.indexes(), this.tokens.collection.indexes()]);
-    if (!userIndexes.some((i) => i.unique && !i.sparse && !i.partialFilterExpression && Object.keys(i.key).length === 1 && i.key.correo === 1) ||
-        !tokenIndexes.some((i) => i.unique && !i.sparse && !i.partialFilterExpression && Object.keys(i.key).length === 1 && i.key.tokenHash === 1)) throw new Error('Índices de identidad no disponibles');
+    if (!userIndexes.some((i) => compatibleIdentityIndex(i, 'correo', 'correo_1')) ||
+        !tokenIndexes.some((i) => compatibleIdentityIndex(i, 'tokenHash', 'tokenHash_1'))) throw new Error('Índices de identidad no disponibles');
     const correo = input.correo.trim().toLowerCase();
     const contraseñaHash = await this.passwords.hash(input.contraseña);
     const usuarioId = new Types.ObjectId();
@@ -39,6 +40,6 @@ export class RegistrationService {
         throw error;
       }
     } finally { await session.endSession(); }
-    try { await this.mailer.sendVerification(correo, code); } catch { throw new Error('No se pudo procesar el envío'); }
+    try { await this.mailer.sendVerification(correo, code); } catch { throw new VerificationDeliveryError(); }
   }
 }

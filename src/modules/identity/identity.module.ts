@@ -13,8 +13,7 @@ import { ResendVerificationService } from './application/resend-verification.ser
 import { VERIFICATION_MAILER, VerificationMailer } from './application/verification-mailer';
 import { verificationCodesFromConfig, verificationPolicyFromConfig, VerificationPolicy } from './application/verification-policy';
 import { VerificationCodeService } from './infrastructure/verification-code.service';
-import { TestVerificationMailer } from './infrastructure/test-verification-mailer';
-import { DevelopmentVerificationMailer } from './infrastructure/development-verification-mailer';
+import { verificationMailerFromConfig } from './infrastructure/verification-mailer.factory';
 import { RateLimitModule } from '../../infrastructure/rate-limit/rate-limit.module';
 import { OriginRateLimitService } from '../../infrastructure/rate-limit/origin-rate-limit.service';
 import { IdentityOperationsService } from './application/identity-operations.service';
@@ -30,17 +29,12 @@ const POLICY = Symbol('VERIFICATION_POLICY');
   providers: [
     { provide: VerificationCodeService, useFactory: verificationCodesFromConfig, inject: [ConfigService] },
     { provide: POLICY, useFactory: verificationPolicyFromConfig, inject: [ConfigService] },
-    { provide: VERIFICATION_MAILER, useFactory: (config: ConfigService): VerificationMailer => {
-      const env = config.getOrThrow<string>('NODE_ENV');
-      if (env === 'test') return new TestVerificationMailer();
-      if (env === 'development') return new DevelopmentVerificationMailer();
-      throw new Error('Proveedor de correo de producción no configurado');
-    }, inject: [ConfigService] },
+    { provide: VERIFICATION_MAILER, useFactory: verificationMailerFromConfig, inject: [ConfigService] },
     { provide: RegistrationService, useFactory: (connection: Connection, users: Model<Usuario>, tokens: Model<TokenCuenta>, passwords: PasswordService, codes: VerificationCodeService, mailer: VerificationMailer) => new RegistrationService(connection, users, tokens, passwords, codes, mailer), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('TokenCuenta'), PasswordService, VerificationCodeService, VERIFICATION_MAILER] },
     { provide: VerifyEmailService, useFactory: (connection: Connection, users: Model<Usuario>, tokens: Model<TokenCuenta>, codes: VerificationCodeService, policy: VerificationPolicy) => new VerifyEmailService(connection, users, tokens, codes, policy), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('TokenCuenta'), VerificationCodeService, POLICY] },
     { provide: ResendVerificationService, useFactory: (connection: Connection, users: Model<Usuario>, tokens: Model<TokenCuenta>, codes: VerificationCodeService, mailer: VerificationMailer, policy: VerificationPolicy) => new ResendVerificationService(connection, users, tokens, codes, mailer, policy), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('TokenCuenta'), VerificationCodeService, VERIFICATION_MAILER, POLICY] },
     { provide: IdentityOperationsService, useFactory: (limiter: OriginRateLimitService, registration: RegistrationService, verification: VerifyEmailService, resend: ResendVerificationService) => new IdentityOperationsService(limiter, registration, verification, resend), inject: [OriginRateLimitService, RegistrationService, VerifyEmailService, ResendVerificationService] },
   ],
-  exports: [MongooseModule, IdentityOperationsService],
+  exports: [MongooseModule, IdentityOperationsService, VERIFICATION_MAILER],
 })
 export class IdentityModule {}

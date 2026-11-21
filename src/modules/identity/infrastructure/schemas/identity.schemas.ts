@@ -57,7 +57,7 @@ export const UsuarioSchema = new Schema<Usuario>({
   creadoEn: Date,
   seguridadVerificacion: { type: new Schema({ tokenActualId: { type: Schema.Types.ObjectId, required: true }, ultimaEmision: { type: Date, required: true }, emisionesInicio: { type: Date, required: true }, emisiones: { type: Number, required: true, min: 0 }, fallosInicio: { type: Date, required: true }, fallos: { type: Number, required: true, min: 0 }, revision: { type: Number, required: true, min: 0 } }, { _id: false }), required: false },
 }, { collection: 'usuarios', versionKey: false, autoCreate: false, autoIndex: false, toJSON: hideSecret('contraseñaHash'), toObject: hideSecret('contraseñaHash') });
-UsuarioSchema.index({ correo: 1 }, { unique: true });
+UsuarioSchema.index({ correo: 1 }, { name: 'correo_1', unique: true, collation: { locale: 'simple' } });
 
 export const TokenCuentaSchema = new Schema<TokenCuenta>({
   usuarioId: { type: Schema.Types.ObjectId, ref: 'Usuario', required: true },
@@ -70,7 +70,7 @@ export const TokenCuentaSchema = new Schema<TokenCuenta>({
   intentosFallidos: { type: Number, min: 0, max: 5 },
   versionHmac: Number,
 }, { collection: 'tokens_cuenta', versionKey: false, autoCreate: false, autoIndex: false, toJSON: hideSecret('tokenHash'), toObject: hideSecret('tokenHash') });
-TokenCuentaSchema.index({ tokenHash: 1 }, { unique: true });
+TokenCuentaSchema.index({ tokenHash: 1 }, { name: 'tokenHash_1', unique: true, collation: { locale: 'simple' } });
 
 export const SesionSchema = new Schema<Sesion>({
   usuarioId: { type: Schema.Types.ObjectId, ref: 'Usuario', required: true },

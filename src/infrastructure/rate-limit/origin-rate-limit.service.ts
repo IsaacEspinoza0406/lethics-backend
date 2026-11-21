@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'node:crypto';
 import { isIP } from 'node:net';
 import { createClient } from 'redis';
+import { inspectRedisReadiness } from './redis-readiness';
 
 export type LimitedOperation = 'register' | 'verify' | 'resend';
 export class RateLimitUnavailableError extends Error { constructor() { super('Control de solicitudes no disponible'); } }
@@ -63,19 +64,12 @@ export class OriginRateLimitService implements OnApplicationShutdown {
       const max = this.config.getOrThrow<number>(`RATE_LIMIT_${caps[operation]}_MAX`);
       const maxWindow = Math.max(...Object.values(caps).map((v) => this.config.getOrThrow<number>(`RATE_LIMIT_${v}_WINDOW_SECONDS`)));
       const before = await client.info('server');
-      const runId = /^run_id:(\S+)\r?$/m.exec(before)?.[1];
-      const uptime = Number(/^uptime_in_seconds:(\d+)\r?$/m.exec(before)?.[1]);
       const persistence = await client.info('persistence');
       const replication = await client.info('replication');
       const settings = await client.sendCommand(['CONFIG', 'GET', 'appendonly', 'appendfsync', 'maxmemory-policy']);
-      const values = new Map<string, unknown>();
-      if (Array.isArray(settings)) {
-        if (settings.length !== 6) throw new Error('invalid configuration');
-        for (let i = 0; i < settings.length; i += 2) values.set(String(settings[i]), settings[i + 1]);
-      } else if (settings && typeof settings === 'object') {
-        for (const [key, value] of Object.entries(settings)) values.set(key, value);
-      } else throw new Error('invalid configuration');
-      if (!runId || !Number.isFinite(uptime) || uptime < maxWindow || !/^aof_enabled:1\r?$/m.test(persistence) || !/^aof_last_write_status:ok\r?$/m.test(persistence) || !/^role:master\r?$/m.test(replication) || values.get('appendonly') !== 'yes' || values.get('appendfsync') !== 'always' || values.get('maxmemory-policy') !== 'noeviction') throw new Error('untrusted state');
+      const readiness = inspectRedisReadiness(before, persistence, replication, settings, maxWindow);
+      const runId = readiness.runId;
+      if (!readiness.ready || !Number.isSafeInteger(max) || max < 1 || !Number.isSafeInteger(window) || window < 1) throw new Error('untrusted state');
       const digest = createHmac('sha256', Buffer.from(this.config.getOrThrow<string>('RATE_LIMIT_HMAC_KEY_BASE64'), 'base64')).update(origin).digest('hex');
       const name = `lethics:limit:${this.config.getOrThrow<string>('RATE_LIMIT_NAMESPACE')}:${operation}:${digest}`;
       const result = await client.eval(SCRIPT, { keys: [name], arguments: [String(window)] });
