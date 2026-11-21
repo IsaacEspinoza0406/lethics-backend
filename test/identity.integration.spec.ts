@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import mongoose, { Connection } from 'mongoose';
 import { SesionSchema, TokenCuentaSchema, UsuarioSchema, TokenCuenta, Usuario } from '../src/modules/identity/infrastructure/schemas/identity.schemas';
 import { randomBytes } from 'node:crypto';
@@ -15,28 +14,22 @@ import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { VERIFICATION_MAILER } from '../src/modules/identity/application/verification-mailer';
+import { optionalMongoTestScope } from './integration-isolation';
 
-const uri = process.env.LETHICS_IDENTITY_TEST_URI;
-const integration = uri ? describe : describe.skip;
+const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'identity');
+const uri = scope?.uri;
+const integration = scope ? describe : describe.skip;
 
 integration('Persistencia de identidad aislada', () => {
-  const dbName = `lethics_identity_test_${randomUUID().replace(/-/g, '')}`;
+  const dbName = scope?.dbName;
   let connection: Connection;
-  let ownsDatabase = false;
   beforeAll(async () => {
-    const address = new URL(uri!);
-    if (address.protocol !== 'mongodb:' || !['localhost', '127.0.0.1'].includes(address.hostname) || address.port !== '27018') throw new Error('Integration tests require local MongoDB on port 27018');
-    connection = await mongoose.createConnection(uri!, { dbName, serverSelectionTimeoutMS: 5000 }).asPromise();
-    const databases = await connection.db!.admin().listDatabases();
-    if (databases.databases.some((db) => db.name === dbName)) throw new Error('Test database already exists');
-    await connection.db!.createCollection('identity_test_marker');
-    ownsDatabase = true;
+    const temporary = await scope!.open();
+    connection = mongoose.createConnection().setClient(temporary.client);
   });
   afterAll(async () => {
-    if (connection) {
-      if (ownsDatabase && /^lethics_identity_test_[a-f0-9]{32}$/.test(dbName) && connection.name === dbName) await connection.dropDatabase();
-      await connection.close();
-    }
+    try { await scope!.close(); }
+    finally { if (connection) await connection.close(); }
   });
   it('crea índices y rechaza duplicados, conservando hashes fuera de las consultas y serializaciones', async () => {
     const User = connection.model('Usuario', UsuarioSchema);

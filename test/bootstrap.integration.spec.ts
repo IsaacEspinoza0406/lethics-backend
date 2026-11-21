@@ -13,6 +13,7 @@ import { AccessTokenService } from '../src/infrastructure/security/access-token.
 import { OpaqueTokenService } from '../src/infrastructure/security/opaque-token.service';
 import { HealthController } from '../src/modules/health/health.controller';
 import { getConnectionToken } from '@nestjs/mongoose';
+import { createRedisTestTarget, optionalMongoTestScope } from './integration-isolation';
 
 describe('Configuración e inyección de seguridad', () => {
   it('resuelve los tres servicios y aplica la configuración HTTP compartida', async () => {
@@ -37,17 +38,25 @@ describe('Configuración e inyección de seguridad', () => {
   });
 });
 
-const uri = process.env.LETHICS_IDENTITY_TEST_URI;
-const integration = uri ? describe : describe.skip;
+const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'bootstrap');
+const uri = scope?.uri;
+const integration = scope ? describe : describe.skip;
 integration('Arranque real compilado', () => {
+  beforeAll(async () => {
+    await scope!.open();
+  });
+  afterAll(async () => {
+    await scope!.close();
+  });
   const secret = randomBytes(32).toString('base64');
   const cwd = resolve(process.cwd(), 'node_modules'); // No carga el .env del proyecto.
   const main = resolve(process.cwd(), 'dist/main.js');
+  const testNamespace = createRedisTestTarget('redis://:test-only@localhost:6380').namespace;
   const base: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test', MONGODB_URI: uri, JWT_ACCESS_SECRET_BASE64: secret, JWT_ACCESS_ISSUER: 'test-issuer', JWT_ACCESS_AUDIENCE: 'test-audience', JWT_ACCESS_TTL_SECONDS: '60', VERIFICATION_CODE_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), RATE_LIMIT_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), REDIS_URL: 'redis://:test-only@localhost:6380' };
 
   it('rechaza configuración ausente o inválida sin divulgar la clave', () => {
     for (const field of ['JWT_ACCESS_SECRET_BASE64', 'JWT_ACCESS_ISSUER', 'JWT_ACCESS_AUDIENCE', 'JWT_ACCESS_TTL_SECONDS', 'VERIFICATION_CODE_HMAC_KEY_BASE64', 'RATE_LIMIT_HMAC_KEY_BASE64', 'REDIS_URL']) {
-      const env = { ...base };
+      const env: NodeJS.ProcessEnv = { ...base, RATE_LIMIT_NAMESPACE: testNamespace };
       delete env[field];
       const child = spawnSync(process.execPath, [main], { cwd, env, encoding: 'utf8', timeout: 10000 });
       expect(child.status).not.toBe(0);
@@ -57,7 +66,7 @@ integration('Arranque real compilado', () => {
       expect((child.stderr + child.stdout).includes(secret)).toBe(false);
     }
     for (const override of [{ JWT_ACCESS_SECRET_BASE64: 'clave-invalida' }, { JWT_ACCESS_TTL_SECONDS: '0' }]) {
-      const child = spawnSync(process.execPath, [main], { cwd, env: { ...base, ...override }, encoding: 'utf8', timeout: 10000 });
+      const child = spawnSync(process.execPath, [main], { cwd, env: { ...base, RATE_LIMIT_NAMESPACE: testNamespace, ...override }, encoding: 'utf8', timeout: 10000 });
       expect(child.status).not.toBe(0);
       expect(child.error).toBeUndefined();
       expect(child.stderr + child.stdout).toContain('Config validation error');
@@ -73,7 +82,7 @@ integration('Arranque real compilado', () => {
     if (!address || typeof address === 'string') throw new Error('Puerto no disponible');
     const port = address.port;
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-    const child = spawn(process.execPath, [main], { cwd, env: { ...base, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [main], { cwd, env: { ...base, RATE_LIMIT_NAMESPACE: testNamespace, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
     child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
@@ -92,7 +101,13 @@ integration('Arranque real compilado', () => {
         expect(body).not.toContain('test-audience');
       }
       expect(output.includes(secret)).toBe(false);
-    } finally { child.kill(); }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const closed = new Promise<void>((done) => child.once('close', () => done()));
+        child.kill();
+        await closed;
+      }
+    }
   }, 20000);
 });
 
