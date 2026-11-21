@@ -2,7 +2,7 @@ import { Connection, Model, Types } from 'mongoose';
 import { PasswordService } from '../../../infrastructure/security/password.service';
 import { TokenCuenta, Usuario } from '../infrastructure/schemas/identity.schemas';
 import { VerificationCodeService } from '../infrastructure/verification-code.service';
-import { VerificationMailer } from './verification-mailer';
+import { VerificationDeliveryError, VerificationMailer } from './verification-mailer';
 import { compatibleIdentityIndex } from '../infrastructure/identity-indexes';
 
 /** Internal use case: no HTTP route; callers must enforce shared abuse controls. */
@@ -40,6 +40,6 @@ export class RegistrationService {
         throw error;
       }
     } finally { await session.endSession(); }
-    try { await this.mailer.sendVerification(correo, code); } catch { throw new Error('No se pudo procesar el envío'); }
+    try { await this.mailer.sendVerification(correo, code); } catch { throw new VerificationDeliveryError(); }
   }
 }

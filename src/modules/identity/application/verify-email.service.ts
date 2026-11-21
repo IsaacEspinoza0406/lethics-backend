@@ -4,7 +4,7 @@ import { VerificationCodeService } from '../infrastructure/verification-code.ser
 import { defaultVerificationPolicy, VerificationPolicy } from './verification-policy';
 import { validVerificationState, validVerificationToken } from '../infrastructure/legacy-security';
 
-/** Internal only: controls by origin and public response handling are not implemented. */
+/** Use case: the HTTP boundary enforces origin controls and public response handling. */
 export class VerifyEmailService {
   constructor(private readonly connection: Connection, private readonly users: Model<Usuario>, private readonly tokens: Model<TokenCuenta>, private readonly codes: VerificationCodeService, private readonly policy: VerificationPolicy = defaultVerificationPolicy, private readonly clock: () => Date = () => new Date()) {}
 

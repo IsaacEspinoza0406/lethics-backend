@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './infrastructure/security/security.module';
 import { RateLimitModule } from './infrastructure/rate-limit/rate-limit.module';
 import { IdentityModule } from './modules/identity/identity.module';
+import { AuthHttpModule } from './modules/auth/auth-http.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { IdentityModule } from './modules/identity/identity.module';
     SecurityModule,
     RateLimitModule,
     IdentityModule,
+    AuthHttpModule,
   ],
 })
 export class AppModule {}
