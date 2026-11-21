@@ -70,7 +70,7 @@ async function main() {
   const jest = join(root, 'node_modules/jest/bin/jest.js');
   const args = mode === 'suite'
     ? [join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), 'test', '--', '--detectOpenHandles']
-    : [jest, '--runInBand', '--runTestsByPath', 'test/smtp-verification.spec.ts', 'test/mailpit.integration.spec.ts', '--detectOpenHandles'];
+    : [jest, '--runInBand', '--runTestsByPath', 'test/smtp-verification.spec.ts', 'test/smtp-delivery-policy.spec.ts', 'test/mailpit.integration.spec.ts', 'test/auth-http.integration.spec.ts', '--detectOpenHandles'];
   const result = await new Promise((done) => {
     child = spawn(process.execPath, args, { cwd: root, env: testEnv, stdio: 'inherit' });
     child.once('error', () => done(1)); child.once('exit', (code) => done(code === null ? 1 : code));

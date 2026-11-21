@@ -10,18 +10,18 @@ import { VerificationDeliveryError } from '../src/modules/identity/application/v
 jest.mock('nodemailer', () => ({ createTransport: jest.fn() }));
 
 describe('SMTP desacoplado y exclusivamente simulado durante pruebas', () => {
-  const smtp = { NODE_ENV: 'development', VERIFICATION_MAIL_TRANSPORT: 'smtp', SMTP_HOST: 'smtp.example.invalid', SMTP_PORT: 465, SMTP_SECURE: true, SMTP_USER: 'test-only', SMTP_PASSWORD: 'test-only-password', SMTP_FROM: 'verification@example.invalid' };
+  const smtp = { NODE_ENV: 'development', VERIFICATION_MAIL_TRANSPORT: 'smtp', SMTP_HOST: 'smtp.example.test', SMTP_PORT: 465, SMTP_SECURE: true, SMTP_USER: 'test-only', SMTP_PASSWORD: 'test-only-password', SMTP_FROM: 'verification@example.test' };
   const transport = { verify: jest.fn(), sendMail: jest.fn(), close: jest.fn() };
   beforeEach(() => {
     jest.clearAllMocks(); (createTransport as jest.Mock).mockReturnValue(transport);
     transport.verify.mockResolvedValue(true);
-    transport.sendMail.mockResolvedValue({ accepted: ['persona@example.invalid'], rejected: [] });
+    transport.sendMail.mockResolvedValue({ accepted: ['persona@example.test'], rejected: [] });
   });
   it('configura TLS validado, sin logs, archivos, URLs ni pool', async () => {
     const mailer = new SmtpVerificationMailer(new ConfigService(smtp));
     expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({ secure: true, logger: false, debug: false, pool: false, disableFileAccess: true, disableUrlAccess: true, tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' } }));
-    await mailer.sendVerification('persona@example.invalid', '012345');
-    expect(transport.sendMail).toHaveBeenCalledWith({ from: smtp.SMTP_FROM, to: 'persona@example.invalid', subject: expect.any(String), text: expect.stringContaining('012345') });
+    await mailer.sendVerification('persona@example.test', '012345');
+    expect(transport.sendMail).toHaveBeenCalledWith({ from: smtp.SMTP_FROM, to: 'persona@example.test', messageId: expect.any(String), date: expect.any(Date), subject: expect.any(String), text: expect.stringContaining('012345') });
     mailer.onApplicationShutdown(); expect(transport.close).toHaveBeenCalledTimes(1);
   });
   it('exige STARTTLS cuando no usa TLS implícito', () => {
@@ -37,20 +37,20 @@ describe('SMTP desacoplado y exclusivamente simulado durante pruebas', () => {
     transport.verify.mockRejectedValueOnce(new Error('private-secret'));
     await expect(mailer.assertAvailable()).rejects.not.toThrow('private-secret');
   });
-  it.each([{ accepted: [], rejected: ['persona@example.invalid'] }, { accepted: [], rejected: [] }])('no afirma aceptación SMTP en respuesta %j', async (result) => {
+  it.each([{ accepted: [], rejected: ['persona@example.test'] }, { accepted: [], rejected: [] }])('no afirma aceptación SMTP en respuesta %j', async (result) => {
     transport.sendMail.mockResolvedValueOnce(result);
-    await expect(new SmtpVerificationMailer(new ConfigService(smtp)).sendVerification('persona@example.invalid', '012345')).rejects.toBeInstanceOf(VerificationDeliveryError);
+    await expect(new SmtpVerificationMailer(new ConfigService(smtp)).sendVerification('persona@example.test', '012345')).rejects.toBeInstanceOf(VerificationDeliveryError);
   });
   it('sanitiza errores SMTP que contengan información sensible', async () => {
     transport.sendMail.mockRejectedValueOnce(new Error('private-password smtp-host codigo=012345'));
-    const promise = new SmtpVerificationMailer(new ConfigService(smtp)).sendVerification('persona@example.invalid', '012345');
+    const promise = new SmtpVerificationMailer(new ConfigService(smtp)).sendVerification('persona@example.test', '012345');
     await expect(promise).rejects.toThrow('No se pudo procesar el envío');
     await expect(promise).rejects.not.toThrow(/private-password|smtp-host|012345/);
   });
   it('rechaza inyección de cabeceras y códigos inválidos antes de enviar', async () => {
     const mailer = new SmtpVerificationMailer(new ConfigService(smtp));
-    await expect(mailer.sendVerification('persona@example.invalid\r\nBcc:otra@example.invalid', '012345')).rejects.toThrow();
-    await expect(mailer.sendVerification('persona@example.invalid', '12345x')).rejects.toThrow();
+    await expect(mailer.sendVerification('persona@example.test\r\nBcc:otra@example.test', '012345')).rejects.toThrow();
+    await expect(mailer.sendVerification('persona@example.test', '12345x')).rejects.toThrow();
     expect(transport.sendMail).not.toHaveBeenCalled();
   });
   it('test nunca construye transporte real aun con configuración SMTP heredada', () => {
@@ -59,7 +59,7 @@ describe('SMTP desacoplado y exclusivamente simulado durante pruebas', () => {
   });
   it('desarrollo sin transporte rechaza entrega y producción sin SMTP conserva bloqueo de inicio', async () => {
     const disabled = verificationMailerFromConfig(new ConfigService({ NODE_ENV: 'development' }));
-    await expect(disabled.sendVerification('persona@example.invalid', '012345')).rejects.toThrow('no configurado');
+    await expect(disabled.sendVerification('persona@example.test', '012345')).rejects.toThrow('no configurado');
     expect(() => verificationMailerFromConfig(new ConfigService({ NODE_ENV: 'production' }))).toThrow('no configurado');
     expect(createTransport).not.toHaveBeenCalled();
   });
@@ -73,6 +73,6 @@ describe('SMTP desacoplado y exclusivamente simulado durante pruebas', () => {
       const settings: Record<string, unknown> = { ...base, ...smtp }; delete settings[field];
       expect(environmentSchema.validate(settings).error).toBeDefined();
     }
-    expect(environmentSchema.validate({ ...base, ...smtp, SMTP_FROM: 'bad\r\nFrom:another@example.invalid' }).error).toBeDefined();
+    expect(environmentSchema.validate({ ...base, ...smtp, SMTP_FROM: 'bad\r\nFrom:another@example.test' }).error).toBeDefined();
   });
 });

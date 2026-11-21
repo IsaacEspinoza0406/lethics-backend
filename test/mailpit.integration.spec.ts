@@ -13,6 +13,7 @@ import { SmtpVerificationMailer } from '../src/modules/identity/infrastructure/s
 import { installIdentityIndexes } from '../src/modules/identity/infrastructure/identity-indexes';
 import { TokenCuenta, Usuario } from '../src/modules/identity/infrastructure/schemas/identity.schemas';
 import { createMongoTestScope, createRedisTestTarget } from './integration-isolation';
+import { createFaultSmtpServer } from './smtp-fault-server';
 
 // Opt-in only. All other tests retain the default simulated factory for NODE_ENV=test.
 const api = process.env.LETHICS_MAILPIT_API_URL;
@@ -130,4 +131,31 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
       expect(logs.join('\n')).not.toMatch(/incorrect-synthetic-password|012345/);
     } finally { mailer.onApplicationShutdown(); }
   }, 15000);
+  it('reintenta un rechazo temporal anterior a DATA y transmite un único mensaje por TLS', async () => {
+    const receiver = await createFaultSmtpServer('temporary');
+    const mailer = new SmtpVerificationMailer(new ConfigService({ ...settings, SMTP_PORT: receiver.port, SMTP_SECURE: true }));
+    try {
+      await mailer.sendVerification('temporary@example.test', '012345');
+      expect(receiver.connections).toBe(2); expect(receiver.messages).toHaveLength(1);
+      expect(receiver.messages[0]).toContain('012345');
+    } finally { mailer.onApplicationShutdown(); await receiver.close(); }
+  }, 15000);
+  it('no reintenta un rechazo permanente de destinatario ni transmite DATA', async () => {
+    const receiver = await createFaultSmtpServer('permanent');
+    const mailer = new SmtpVerificationMailer(new ConfigService({ ...settings, SMTP_PORT: receiver.port, SMTP_SECURE: true }));
+    try {
+      await expect(mailer.sendVerification('permanent@example.test', '012345')).rejects.toBeInstanceOf(VerificationDeliveryError);
+      expect(receiver.connections).toBe(1); expect(receiver.messages).toHaveLength(0);
+    } finally { mailer.onApplicationShutdown(); await receiver.close(); }
+  }, 15000);
+  it.each(['disconnect-after-data', 'timeout-after-data'] as const)('no reintenta un resultado incierto real: %s', async (fault) => {
+    const receiver = await createFaultSmtpServer(fault);
+    const mailer = new SmtpVerificationMailer(new ConfigService({ ...settings, SMTP_PORT: receiver.port, SMTP_SECURE: true }));
+    try {
+      await expect(mailer.sendVerification('uncertain@example.test', '012345')).rejects.toThrow('No se pudo procesar el envío');
+      expect(receiver.connections).toBe(1); expect(receiver.messages).toHaveLength(1);
+      expect(receiver.messages[0]).toContain('012345');
+      expect(logs.join('\n')).not.toContain('012345');
+    } finally { mailer.onApplicationShutdown(); await receiver.close(); }
+  }, 20000);
 });
