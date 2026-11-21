@@ -3,6 +3,7 @@ import { TokenCuenta, Usuario } from '../infrastructure/schemas/identity.schemas
 import { VerificationCodeService } from '../infrastructure/verification-code.service';
 import { VerificationMailer } from './verification-mailer';
 import { defaultVerificationPolicy, VerificationPolicy } from './verification-policy';
+import { validVerificationState, validVerificationToken } from '../infrastructure/legacy-security';
 
 /** Internal only: per-origin abuse controls are required before exposure. */
 export class ResendVerificationService {
@@ -17,7 +18,7 @@ export class ResendVerificationService {
         codeToSend = undefined;
         const now = this.clock();
         const user = await this.users.findOneAndUpdate({ correo: normalized, verificadoEn: null, 'seguridadVerificacion.revision': { $gte: 0 } }, { $inc: { 'seguridadVerificacion.revision': 1 } }, { session, new: true });
-        if (!user?.seguridadVerificacion) return;
+        if (!user?.seguridadVerificacion || !validVerificationState(user.seguridadVerificacion)) return;
         const state = user.seguridadVerificacion;
         if (now.getTime() - state.ultimaEmision.getTime() < 60_000) return;
         const reset = now.getTime() - state.emisionesInicio.getTime() >= 3_600_000;
@@ -25,7 +26,7 @@ export class ResendVerificationService {
         if (emissions >= this.policy.maxEmissionsPerHour) return;
         const tokenId = new Types.ObjectId();
         const previous = await this.tokens.findOne({ _id: state.tokenActualId, usuarioId: user._id, versionHmac: 2 }).select('+tokenHash').session(session);
-        if (!previous) throw new Error('Estado de verificación requiere migración');
+        if (!previous || !validVerificationToken(previous.toObject())) throw new Error('Estado de verificación requiere migración');
         let code = '';
         for (let attempt = 0; attempt < 16; attempt++) {
           const candidate = this.codes.generate();
