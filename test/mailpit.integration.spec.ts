@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { configureApp } from '../src/configure-app';
 import { AuthHttpModule } from '../src/modules/auth/auth-http.module';
+import { UsersModule } from '../src/modules/users/users.module';
 import { VERIFICATION_MAILER, VerificationDeliveryError } from '../src/modules/identity/application/verification-mailer';
 import { verificationMailerFromConfig } from '../src/modules/identity/infrastructure/verification-mailer.factory';
 import { SmtpVerificationMailer } from '../src/modules/identity/infrastructure/smtp-verification-mailer';
@@ -74,7 +75,7 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
     await temporary.db.createCollection('usuarios'); await temporary.db.createCollection('tokens_cuenta'); await temporary.db.createCollection('sesiones');
     await installIdentityIndexes(temporary.db, `INSTALL INDEXES ${scope!.dbName}`);
     const module = await Test.createTestingModule({ imports: [TemporaryConnectionModule,
-      ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => settings] }), AuthHttpModule,
+      ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => settings] }), AuthHttpModule, UsersModule,
     ] }).overrideProvider(VERIFICATION_MAILER).useFactory({ factory: () => verificationMailerFromConfig(new ConfigService({ ...settings, NODE_ENV: 'development' })) }).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
   }, 20000);
@@ -143,6 +144,50 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
     await request(app.getHttpServer()).post('/api/v1/auth/login').send({ correo, contraseña: nextPassword }).expect(200);
     await request(app.getHttpServer()).post('/api/v1/auth/refresh').set('Origin', settings.AUTH_BROWSER_ORIGIN).set('Cookie', login.headers['set-cookie'][0].split(';')[0]).send({}).expect(401);
     for (const secret of [token, tokenHash, oldPassword, nextPassword, settings.SMTP_PASSWORD]) expect(response.text + reset.text + logs.join('\n')).not.toContain(secret);
+  }, 25000);
+
+  it('recorrido completo de una cuenta: registro → verificación → login → perfil → refresh → logout → recuperación → reset → nuevo login', async () => {
+    const correo = `journey-${randomUUID()}@example.test`, password = `old-${randomUUID()}`, newPassword = `new-${randomUUID()}`;
+    const call = (path: string, body: object) => request(app.getHttpServer()).post(`/api/v1/auth/${path}`).send(body);
+    const pair = (response: request.Response): string => response.headers['set-cookie'][0].split(';')[0];
+    const command = (path: string, cookie: string) => request(app.getHttpServer()).post(`/api/v1/auth/${path}`).set('Origin', settings.AUTH_BROWSER_ORIGIN).set('Cookie', cookie).send({});
+    const responses: request.Response[] = [];
+    responses.push(await call('register', { nombre: 'Recorrido sintético', correo, contraseña: password }).expect(202));
+    await call('login', { correo, contraseña: password }).expect(401);
+    const verification = (await received(correo)).find((message) => message.Subject === 'Verificación de correo — Lethics')!;
+    const verificationCode = code(verification);
+    responses.push(await call('verify', { correo, codigo: verificationCode }).expect(200));
+    const login = await call('login', { correo, contraseña: password }).expect(200); responses.push(login);
+    const me = await request(app.getHttpServer()).get('/api/v1/users/me').auth(login.body.accessToken, { type: 'bearer' }).expect(200); responses.push(me);
+    expect(me.body).toEqual({ id: expect.any(String), nombre: 'Recorrido sintético', correo, rol: 'estudiante' });
+    const refreshed = await command('refresh', pair(login)).expect(200); responses.push(refreshed);
+    expect(pair(refreshed)).not.toBe(pair(login)); expect(refreshed.body.accessToken).not.toBe(login.body.accessToken);
+    const loggedOut = await command('logout', pair(refreshed)).expect(204); responses.push(loggedOut);
+    expect(loggedOut.headers['set-cookie'][0]).toContain('Expires=Thu, 01 Jan 1970');
+    await command('refresh', pair(refreshed)).expect(401);
+    // Actual guarantee: logout revokes refresh, not a still-valid access JWT.
+    await request(app.getHttpServer()).get('/api/v1/users/me').auth(refreshed.body.accessToken, { type: 'bearer' }).expect(200);
+    responses.push(await call('password/forgot', { correo }).expect(202));
+    await app.get(PasswordRecoveryService).waitForPendingRequests();
+    const recovery = (await received(correo)).find((message) => message.Subject === 'Recuperación de contraseña — Lethics')!;
+    expect(recovery.To.map((recipient) => recipient.Address)).toEqual([correo]);
+    const token = /Tu token de recuperación es ([A-Za-z0-9_-]{43})\./.exec(recovery.Text)![1];
+    responses.push(await call('password/reset', { token, nuevaContraseña: newPassword }).expect(200));
+    await call('password/reset', { token, nuevaContraseña: newPassword }).expect(400);
+    await call('login', { correo, contraseña: password }).expect(401);
+    const next = await call('login', { correo, contraseña: newPassword }).expect(200); responses.push(next);
+    const nextProfile = await request(app.getHttpServer()).get('/api/v1/users/me').auth(next.body.accessToken, { type: 'bearer' }).expect(200);
+    expect(nextProfile.body).toEqual(me.body);
+    for (const response of [login, refreshed, next]) {
+      expect(Object.keys(response.body).sort()).toEqual(['accessToken', 'expiresIn', 'tokenType']);
+      expect(response.headers['set-cookie'][0]).toContain('HttpOnly'); expect(response.headers['set-cookie'][0]).toContain('SameSite=Strict');
+      expect(response.headers['cache-control']).toBe('no-store');
+    }
+    const publicResponses = responses.map((response) => response.text).join('\n');
+    for (const secret of [password, newPassword, verificationCode, token]) expect(publicResponses + logs.join('\n')).not.toContain(secret);
+    for (const response of [login, refreshed, next]) expect(logs.join('\n')).not.toContain(response.body.accessToken);
+    const user = await connection.model<Usuario>('Usuario').findOne({ correo }).select('+contraseñaHash');
+    expect(user!.contraseñaHash).toMatch(/^\$argon2id\$/); expect(publicResponses + logs.join('\n')).not.toContain(user!.contraseñaHash);
   }, 25000);
 
   it('rechaza autenticación SMTP incorrecta sin exponer detalles ni aceptar entrega', async () => {
