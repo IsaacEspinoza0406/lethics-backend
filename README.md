@@ -1,5 +1,112 @@
 # Lethics — Backend
 
+## Fase 3G: contrato de autenticación y cierre académico
+
+Inventario contrastado con los controladores y DTO existentes. Prefijo global: `/api/v1`. Las secciones siguientes son históricas; este apartado reúne el contrato de integración vigente. No añade endpoints ni modifica políticas de aplicación.
+
+### Inventario HTTP y DTO
+
+| Método y ruta exacta | DTO / cuerpo JSON | Éxito |
+|---|---|---|
+| `POST /api/v1/auth/register` | `RegisterDto`: `nombre`, `correo`, `contraseña` | 202 `{ "message": "Solicitud recibida." }` |
+| `POST /api/v1/auth/verify` | `VerifyEmailDto`: `correo`, `codigo` | 200 `{ "message": "Correo verificado." }` |
+| `POST /api/v1/auth/resend` | `ResendVerificationDto`: `correo` | 202 `{ "message": "Solicitud recibida." }` |
+| `POST /api/v1/auth/login` | `LoginDto`: `correo`, `contraseña` | 200 `{ "accessToken": "<JWT>", "tokenType": "Bearer", "expiresIn": 900 }` y cookie refresh |
+| `POST /api/v1/auth/refresh` | Sin DTO de body; enviar `{}`. Credencial exclusivamente en cookie. | 200 con el mismo formato de acceso y cookie refresh nueva |
+| `POST /api/v1/auth/logout` | Sin DTO de body; enviar `{}`. Identificación exclusivamente por cookie. | 204 sin body; eliminación de cookie tras confirmación |
+| `GET /api/v1/users/me` | Sin DTO de entrada; `Authorization: Bearer <JWT>` | 200 con exclusivamente `id`, `nombre`, `correo`, `rol` propios |
+| `POST /api/v1/auth/password/forgot` | `ForgotPasswordDto`: `correo` | 202 `{ "message": "Si la cuenta es elegible, recibirás instrucciones de recuperación." }` |
+| `POST /api/v1/auth/password/reset` | `ResetPasswordDto`: `token`, `nuevaContraseña` | 200 `{ "message": "Contraseña restablecida." }` |
+
+Los marcadores `<JWT>` y el token de correo son placeholders, no credenciales. `expiresIn` refleja la configuración efectiva; 900 segundos es el valor operativo actual y máximo permitido. Ejemplo ficticio de perfil: `{ "id": "000000000000000000000001", "nombre": "Estudiante", "correo": "student@example.test", "rol": "estudiante" }`.
+
+Todos los correos se normalizan con trim/lowercase y validan formato, máximo 254 caracteres. Nombre: trim, no vacío, máximo 200. Contraseña de registro/login/reset: cadena no vacía, máximo 1024 según DTO, sin trim ni política adicional de complejidad; el servicio de reset también limita la longitud de la cadena a 1024 unidades UTF-16. Código de verificación: cadena de exactamente seis dígitos, conservando ceros iniciales. Token de recuperación: cadena base64url canónica de 43 caracteres, independiente de códigos y JWT. Los DTO rechazan campos adicionales; el cliente no puede fijar el rol. Refresh/logout no tienen DTO de body: los campos enviados no seleccionan identidad ni proporcionan la credencial, se ignoran; utilizar siempre `{}`.
+
+Registro público asigna exclusivamente `estudiante`. Registro duplicado y reenvío para cuenta inexistente/verificada/restringida conservan el 202 genérico. Forgot mantiene la misma respuesta para cuenta inexistente/no elegible y cuota por cuenta. **202 no confirma envío, recepción ni lectura**, tampoco aunque su texto mencione instrucciones; puede haber fallo posterior al aceptar el trabajo. Reset no verifica correos pendientes, no inicia sesión y no entrega tokens de acceso nuevos: tras 200 se realiza login con la contraseña nueva.
+
+### Disponibilidad y requisitos reales
+
+Las ocho operaciones de `auth` requieren `AUTH_HTTP_ENABLED=true`, modo directo (`AUTH_BEHIND_PROXY=false`), Redis confiable y los índices de identidad instalados y compatibles en MongoDB; se comprueban solo en lectura. Login/refresh/logout/forgot/reset requieren además la colección `sesiones` existente. Register/resend/forgot exigen adaptador SMTP real configurado y preflight de conexión/TLS/autenticación; SMTP caído bloquea esos endpoints antes de aceptar. Verify/login/reset no dependen de un envío de correo en esa petición. Refresh/logout requieren `AUTH_BROWSER_ORIGIN` configurado. Login/refresh/logout validan la configuración segura de cookie.
+
+`GET /users/me` está registrado y protegido por JWT/identidad/rol incluso con `AUTH_HTTP_ENABLED=false`; no consume Redis ni hereda el interruptor operativo de las rutas `auth`. Si MongoDB no permite verificar la identidad, falla cerrado. No existe una blacklist ni se consulta la sesión refresh para autorizar esta ruta.
+
+**Snapshot local de cierre 3G (2026-11-21):** validación de configuración aprobada sin mostrar secretos; interruptor HTTP de auth deshabilitado, SMTP deshabilitado y Origin de navegador sin configurar. Por ello las ocho operaciones `auth` permanecen bloqueadas con 503 y se excluyen de Swagger en esta configuración. `/users/me` exige un JWT válido y usuario elegible; no se comprobó un servidor de desarrollo escuchando ni se habilitaron rutas. Se verificó su funcionamiento mediante aplicaciones Nest aisladas con configuración explícita, MongoDB/Redis de prueba y Mailpit. TTL efectivos locales: acceso 900 s, familia refresh 604800 s, recuperación 900 s; Secure local false (desarrollo). Ninguna opción privada fue modificada. Este snapshot no equivale a disponibilidad de una API pública ni a configuración de producción.
+
+### Errores y cabeceras para Next.js
+
+Enviar `Content-Type: application/json` en los POST. Login/refresh/logout/forgot/reset lo exigen explícitamente (415 en caso contrario). Las respuestas de error del filtro tienen `{ statusCode, message, path, timestamp }`; `message` puede ser cadena o lista de errores DTO. No deben interpretarse errores genéricos como evidencia de existencia de cuenta.
+
+| Estado | Uso real |
+|---|---|
+| 400 | DTO inválido; verify: código inválido/expirado/usado/restringido (`No se pudo verificar el código`); reset: token inválido/expirado/usado/revocado o identidad incompatible (`Solicitud de restablecimiento no válida.`). |
+| 401 | Login: `Credenciales no válidas.` para inexistente, contraseña incorrecta, no verificado o restringido. Refresh: `Sesión no válida.` y cookie eliminada. Perfil: `Autenticación no válida.` para Bearer/JWT/identidad inválidos. |
+| 403 | Perfil sin rol aprobado: `Acceso no permitido.`; Origin no autorizado/ausente cuando obligatorio o `Sec-Fetch-Site: cross-site` en las rutas que aplican esa política. |
+| 415 | Falta JSON en login/refresh/logout/forgot/reset. |
+| 429 | Cuota por origen excedida (`Límite de solicitudes alcanzado`). La cuota por cuenta de forgot responde 202, sin enumeración. No se promete una cabecera Retry-After. |
+| 503 | Ruta operativamente deshabilitada, índices/dependencias/protecciones no disponibles; mensaje público sanitizado. Refresh/logout no confirman éxito ni eliminan cookie por un fallo de infraestructura. |
+
+`Authorization: Bearer <accessToken>` se necesita en `/users/me` y futuras rutas privadas, no para refresh/logout. Bearer duplicado o ambiguo se rechaza; cookies/query/body no sustituyen esa cabecera. Las respuestas de login/refresh, perfil y las rutas de sesión/recuperación evitan caché con `Cache-Control: no-store`; login/refresh/logout también establecen `Pragma: no-cache` en sus respuestas normales.
+
+### Cookie, vigencias y ciclo de sesión
+
+Cookie `lethics_refresh`: HttpOnly, host-only (sin Domain), `SameSite=Strict`, `Path=/api/v1/auth`, Secure obligatorio en producción, configurable en desarrollo. Se establece en login/refresh; el refresh nunca aparece en JSON. La familia dura inicialmente siete días desde el login, configurable hasta ese máximo. Rotar no prolonga esa expiración absoluta. Cookie ausente, duplicada o no canónica no autentica refresh. Logout es idempotente para cookie ausente/desconocida/expirada/revocada, pero sigue exigiendo Origin/JSON/cuota y disponibilidad de infraestructura.
+
+Access JWT HS256: firma, issuer/audience y claims `sub`, `iss`, `aud`, `iat`, `exp`, `jti` estrictos; vigencia máxima 15 minutos. Logout y reset invalidan renovación, **no los JWT ya emitidos**: pueden seguir accediendo hasta expirar mientras usuario/rol sigan elegibles. Logout revoca la familia identificada; reset revoca todas las sesiones del usuario. La cuenta no verificada no puede iniciar sesión ni consultar perfil privado. El código de verificación vence en cinco minutos, permite cinco fallos, es de un solo uso; reenvío mínimo 60 s, revoca el anterior y conserva cuotas. El token de recuperación vence inicialmente en 15 minutos, se sustituye al emitir otro y es de un solo uso; su límite por cuenta tampoco se reinicia al solicitar nuevamente.
+
+### Secuencia de consumo desde Next.js
+
+1. Enviar registro sin `rol`; mostrar confirmación genérica y el formulario del código de correo. Verify no inicia sesión. Resend conserva la respuesta genérica aunque el intervalo/cuota impidan emitir otro mensaje.
+2. Login devuelve access en JSON y el navegador administra Set-Cookie. Mantener access en memoria. Consultar perfil con Bearer; no construir permisos a partir de un rol editable del cliente.
+3. Renovar con POST JSON `{}` y la cookie administrada por el navegador, sin enviar refresh en JSON. Conservar el access nuevo y descartar el anterior de memoria. La cookie se rota automáticamente.
+4. Usar **single-flight de refresh**, también entre pestañas: solo una solicitud consume cada cookie vigente. Dos renovaciones simultáneas legítimas pueden provocar revocación familiar. Ante un 401 privado, como máximo una renovación coordinada y un reintento de la operación; 403 no se corrige renovando. Timeout/respuesta de refresh perdida tiene resultado incierto: no repetir automáticamente con la credencial anterior; solicitar login si no puede recuperarse un estado confiable.
+5. Logout usa JSON `{}` y cookie; tras 204 borrar access/perfil en memoria. Un 503 significa cierre no confirmado. Borrar solo el estado local no revoca la sesión del servidor.
+6. Forgot solo recibe correo y muestra el mensaje genérico. El usuario introduce el token recibido por correo y `nuevaContraseña` en reset. No colocar credenciales en URL/query ni en telemetría. Tras 200 limpiar el estado local y solicitar nuevo login; una cookie antigua todavía presente ya no renueva y se elimina al recibir 401 de refresh.
+
+Ejemplo **para un navegador con API ya accesible en el mismo origen aprobado** (no configura un proxy ni habilita CORS):
+
+```ts
+const response = await fetch('/api/v1/auth/login', {
+  method: 'POST', credentials: 'same-origin', cache: 'no-store',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ correo, contraseña }),
+});
+// Tras comprobar response.ok, conservar accessToken solo en memoria.
+const profile = await fetch('/api/v1/users/me', {
+  headers: { Authorization: `Bearer ${accessToken}` }, cache: 'no-store',
+});
+// Refresh/logout: mismo POST JSON con credentials y body JSON.stringify({}).
+```
+
+**Origin/CORS aún limitan el despliegue real de Next.js.** CORS no está habilitado: configurar `AUTH_BROWSER_ORIGIN` permite comprobar Origin, pero no autoriza peticiones cross-origin del navegador ni sus preflight. Otro puerto ya constituye otro origen. El navegador genera Origin; JavaScript cliente no debe intentar falsificarlo. Refresh/logout exigen siempre el valor exacto aprobado, incluso desde CLI/SSR; login/forgot/reset lo validan si se presenta y rechazan cross-site. Register/verify/resend no incorporan una comprobación Origin específica adicional en su guard actual. SameSite Strict no admite una integración cross-site por habilitar `credentials: include`. Tampoco se confía en X-Forwarded-For: el limitador usa el socket directo.
+
+No hay todavía topología Next.js/BFF/proxy aprobada. Si se aprueba un BFF/SSR, habrá que definir explícitamente propagación de Cookie/Set-Cookie, validación Origin, identificación del origen y cuotas: un fetch del servidor Next no hereda automáticamente las cookies del navegador y el backend verá la IP del BFF. Los ejemplos de mismo origen no afirman que esa infraestructura exista hoy. No se activan CORS ni trust proxy como parte de este cierre.
+
+No guardar access/refresh, contraseñas, códigos ni tokens de recuperación en localStorage/sessionStorage/URLs. El refresh es solo cookie HttpOnly; no intentar leer Set-Cookie desde JavaScript. Evitar cachear respuestas privadas o capturar secretos en logs, analítica, reportes de errores o estado persistido. El almacenamiento en memoria no elimina la necesidad de prevenir XSS.
+
+### Contrato para módulos educativos
+
+[AccessControlModule](src/modules/auth/access-control.module.ts) instala globalmente [JwtAuthGuard](src/modules/auth/jwt-auth.guard.ts) antes de [RolesGuard](src/modules/auth/roles.guard.ts). La aplicación principal ya los incorpora; un host Nest independiente debe importar ese módulo para instalar el mismo comportamiento. Cada petición privada valida JWT e identidad actual en MongoDB. Las rutas nuevas de controladores Nest son privadas por defecto. No hace falta acceder a modelos de IdentityModule para obtener el estudiante.
+
+Importar [Roles, Public, CurrentUser y AuthenticatedUser](src/modules/auth/access-control.ts). Aplicar `@Roles('estudiante')` a los controladores/métodos educativos que requieran ese rol; `@CurrentUser() estudiante: AuthenticatedUser` proporciona un objeto inmutable `{ id, rol }` obtenido de MongoDB. El identificador de confianza es `estudiante.id`; rol de body/query/JWT no concede permisos. `@Public()` omite autenticación y autorización por rol para la ruta; debe reservarse a contenido expresamente público. `@Public(false)` permite proteger un método dentro de un controlador público. Sin `@Roles` se exige identidad, pero no un rol concreto; `@Roles()` sin argumentos deniega todos. Solo `estudiante` está aprobado, sin operaciones administrativas publicadas.
+
+Para progreso, intentos o entregas propias, el servicio educativo debe comprobar **pertenencia del recurso al estudiante autenticado** mediante la relación ya aprobada de su modelo. No sustituir ese id por un identificador de usuario enviado por el frontend. Un guard de rol permite autenticar al estudiante, no acceder a los recursos de otro estudiante. El identificador de un recurso también requiere autorización de pertenencia antes de leer o modificar. Este apartado no define nuevos campos educativos ni modifica cursos, módulos, lecciones o flashcards.
+
+### Límites y prioridades antes del despliegue
+
+| Prioridad | Pendiente / garantía actual |
+|---|---|
+| Alta, antes de exponer a usuarios | Aprobar topología Next.js, política Origin/CORS/proxy y HTTPS/cookies; seleccionar/configurar SMTP de producción, validar secretos y readiness de infraestructura. Mailpit solo prueba captura SMTP local. |
+| Alta, si se requiere recuperación durable | Correo sin outbox/cola durable: una caída abrupta puede perder solicitudes aceptadas o dejar token sin enviar. El cierre ordenado drena trabajo, pero no garantiza entrega ante caída. Nueva arquitectura/modelo requieren aprobación. |
+| Alta para el cliente | Refresh single-flight y tratamiento de resultado incierto; carreras legítimas pueden revocar la familia por la política estricta sin gracia. |
+| Media, operación de sesiones | Definir retención/purga e índices de sesiones con medición y autorización. Conservar hashes revocados mientras pueda haber sucesores válidos para demostrar reutilización; actualmente no hay purga/TTL automática y el historial crece. Considerar recuperación de snapshots sin revivir credenciales. |
+| Límite aceptado de diseño | JWT previos siguen válidos hasta expirar; el cambio de contraseña/logout no afirma revocación instantánea. Los guards sí consultan elegibilidad/rol actuales. |
+| Media, dimensionamiento y producto | Coste Argon2id de coordinación login/reset, cuotas/TTL y política adicional de contraseña deben acordarse para producción. Respuestas genéricas no prometen tiempo constante frente a carga compartida. |
+| Bloqueante para administración | Roles y permisos administrativos pendientes; no publicar operaciones administrativas. |
+
+Se conserva la cobertura anterior de criptografía, rotación/reutilización, pertenencia a familia, DTO, Redis/Mongo fail closed, Origin/cookies y respuestas sin secretos. El único vacío agregado a pruebas en 3G es el recorrido completo de una cuenta registrada por HTTP en [Mailpit](test/mailpit.integration.spec.ts), usando los guards globales reales y las utilidades aisladas existentes.
+
+**Cierre 3G (2026-11-21): módulo funcionalmente cerrado para desarrollo académico, sin problemas críticos identificados en el alcance validado.** `npm.cmd run build` y `npm.cmd run lint` aprobados. Única ejecución completa mediante `node scripts/mailpit.cjs suite` → `npm test -- --detectOpenHandles`: **296/296 pruebas en 28 suites**, 0 fallidas, 0 omitidas, 145.966 s, sin advertencias de recursos abiertos. Se verificaron 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red temporal eliminada. Redis conserva TTL en namespaces exclusivos de prueba, sin FLUSH ni eliminación de cuotas compartidas. `git diff --check` aprobado; rama conservada, sin escrituras de Git. Únicos archivos cambiados: este README, la prueba Mailpit y arquitectura local ignorada. Ningún cambio de aplicación, configuración privada, datos reales, módulos educativos o volúmenes. Calidad del cierre: 8.5/10. Se recomienda PR de `feat/auth-login-sessions` hacia `dev`, sin abrirlo automáticamente. Commits propuestos: prueba del recorrido completo y documentación de contratos, separados por responsabilidad; arquitectura local queda fuera de Git. Este cierre no certifica preparación para producción ni habilita HTTP/CORS/proxies, y no avanza de fase.
+
 ## Fase 3F: recuperación segura de contraseña
 
 Se reutilizan `IdentityModule`, `SecurityModule`, `tokens_cuenta`, Argon2id, el transporte SMTP y los controles HTTP existentes. No se añaden colecciones, campos, índices automáticos ni dependencias. Las rutas están marcadas como operaciones públicas de autenticación; mantienen los guards operativos, Redis fail closed, filtro de excepciones, JSON obligatorio, política de Origin de login (si se presenta debe coincidir; cross-site rechazado), CORS y proxies deshabilitados. No leen credenciales de cookies ni de query.
