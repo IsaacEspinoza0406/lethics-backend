@@ -15,6 +15,9 @@ export function assertSafeTarget(uri, dbName) {
   }
   let url;
   try { url = new URL(uri); } catch { throw new Error('LETHICS_CONTENT_LOAD_URI no es una URI válida.'); }
+  if (decodeURIComponent(url.pathname).replace(/^\//, '') === 'lethics' || [...url.searchParams.keys()].some((key) => key.toLowerCase() === 'dbname')) {
+    throw new Error('La URI no puede seleccionar lethics ni sobrescribir dbName. Usa admin como base semilla.');
+  }
   if (!['mongodb:'].includes(url.protocol)) throw new Error('Solo se admite el esquema mongodb:// (servidor local).');
   const hosts = url.host.split(',').map((h) => {
     const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(h);
@@ -57,7 +60,7 @@ const newStats = () => ({ creados: 0, actualizados: 0, sinCambios: 0 });
  * El documento queda como espejo exacto de lo deseado: lo que cambió se actualiza y los campos
  * sobrantes se eliminan. Devuelve los `_id` en el mismo orden que `items`.
  */
-async function syncDocs(coll, items, fetchFilter, stats, session) {
+async function syncDocs(coll, items, fetchFilter, stats, session, { immutable = false } = {}) {
   if (items.length === 0) return [];
   const fields = Object.keys(items[0].filter);
   const existing = await coll.find(fetchFilter, { session }).toArray();
@@ -90,6 +93,7 @@ async function syncDocs(coll, items, fetchFilter, stats, session) {
       stats.sinCambios++;
       return;
     }
+    if (immutable) throw new Error('Una versión de evaluación existente es inmutable. Crea una versión nueva; no se modifica el historial ni se publica automáticamente.');
     const update = { $set: desired };
     const stale = Object.keys(rest).filter((f) => !(f in desired));
     if (stale.length > 0) update.$unset = Object.fromEntries(stale.map((f) => [f, '']));
@@ -151,7 +155,7 @@ export async function syncContent(db, plan, { ensureIndexes = false, session } =
       const { tipo, version, ...rest } = doc;
       return { filter: { cursoId, moduloId: moduloOrden === null ? null : need(moduloOrden), tipo, version }, doc: rest };
     }),
-    { cursoId }, stats.evaluaciones, session);
+    { cursoId }, stats.evaluaciones, session, { immutable: true });
   await syncDocs(
     col('simuladores'),
     plan.simuladores.map(({ moduloOrden, doc }) => { const { titulo, ...rest } = doc; return { filter: { moduloId: need(moduloOrden), titulo }, doc: rest }; }),

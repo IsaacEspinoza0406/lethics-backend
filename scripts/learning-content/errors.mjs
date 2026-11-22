@@ -32,5 +32,8 @@ export function explainError(err) {
   if (/only allowed on a replica set|Transaction numbers/i.test(message)) {
     return 'Este MongoDB no admite transacciones (requiere replica set). Usa --no-transaction solo en una base de pruebas desechable.';
   }
-  return scrub(message);
+  // JSON parser / unknown driver errors may embed a private question or answer.
+  // Only known operational messages are safe to echo; never dump arbitrary error.message.
+  if (/^(Una versión de evaluación|Falta la variable LETHICS_CONTENT_LOAD_URI|LETHICS_CONTENT_LOAD_URI no|La URI no|Solo se admite|La base .*no es válida|La base .*ya contiene colecciones|No existe el módulo|El plan repite la clave natural|Hay \d+ documentos)/.test(message)) return scrub(message);
+  return 'No se pudo completar la carga. Revisa el formato de los JSON y la configuración local; el detalle se omite para proteger el contenido privado.';
 }
