@@ -1,699 +1,197 @@
 # Lethics — Backend
 
-## Fase 3G: contrato de autenticación y cierre académico
+Lethics es una plataforma web educativa orientada al aprendizaje de ética profesional, principios, legislación y buenas prácticas en el desarrollo de software.
 
-Inventario contrastado con los controladores y DTO existentes. Prefijo global: `/api/v1`. Las secciones siguientes son históricas; este apartado reúne el contrato de integración vigente. No añade endpoints ni modifica políticas de aplicación.
+Este repositorio contiene su API REST. Actualmente proporciona los servicios de identidad y seguridad; sobre esta base se desarrollarán los contenidos educativos, las evaluaciones, las actividades y el seguimiento del estudiante.
 
-### Inventario HTTP y DTO
+## Acerca del proyecto
 
-| Método y ruta exacta | DTO / cuerpo JSON | Éxito |
-|---|---|---|
-| `POST /api/v1/auth/register` | `RegisterDto`: `nombre`, `correo`, `contraseña` | 202 `{ "message": "Solicitud recibida." }` |
-| `POST /api/v1/auth/verify` | `VerifyEmailDto`: `correo`, `codigo` | 200 `{ "message": "Correo verificado." }` |
-| `POST /api/v1/auth/resend` | `ResendVerificationDto`: `correo` | 202 `{ "message": "Solicitud recibida." }` |
-| `POST /api/v1/auth/login` | `LoginDto`: `correo`, `contraseña` | 200 `{ "accessToken": "<JWT>", "tokenType": "Bearer", "expiresIn": 900 }` y cookie refresh |
-| `POST /api/v1/auth/refresh` | Sin DTO de body; enviar `{}`. Credencial exclusivamente en cookie. | 200 con el mismo formato de acceso y cookie refresh nueva |
-| `POST /api/v1/auth/logout` | Sin DTO de body; enviar `{}`. Identificación exclusivamente por cookie. | 204 sin body; eliminación de cookie tras confirmación |
-| `GET /api/v1/users/me` | Sin DTO de entrada; `Authorization: Bearer <JWT>` | 200 con exclusivamente `id`, `nombre`, `correo`, `rol` propios |
-| `POST /api/v1/auth/password/forgot` | `ForgotPasswordDto`: `correo` | 202 `{ "message": "Si la cuenta es elegible, recibirás instrucciones de recuperación." }` |
-| `POST /api/v1/auth/password/reset` | `ResetPasswordDto`: `token`, `nuevaContraseña` | 200 `{ "message": "Contraseña restablecida." }` |
+La plataforma busca acercar estos conocimientos a estudiantes del área de software mediante un recorrido de aprendizaje estructurado, con materiales de consulta y actividades de aplicación. Su contenido tiene fines educativos y no sustituye asesoría legal.
 
-Los marcadores `<JWT>` y el token de correo son placeholders, no credenciales. `expiresIn` refleja la configuración efectiva; 900 segundos es el valor operativo actual y máximo permitido. Ejemplo ficticio de perfil: `{ "id": "000000000000000000000001", "nombre": "Estudiante", "correo": "student@example.test", "rol": "estudiante" }`.
+El backend y el frontend se desarrollan en repositorios separados. La API está destinada a integrarse con una interfaz en Next.js.
 
-Todos los correos se normalizan con trim/lowercase y validan formato, máximo 254 caracteres. Nombre: trim, no vacío, máximo 200. Contraseña de registro/login/reset: cadena no vacía, máximo 1024 según DTO, sin trim ni política adicional de complejidad; el servicio de reset también limita la longitud de la cadena a 1024 unidades UTF-16. Código de verificación: cadena de exactamente seis dígitos, conservando ceros iniciales. Token de recuperación: cadena base64url canónica de 43 caracteres, independiente de códigos y JWT. Los DTO rechazan campos adicionales; el cliente no puede fijar el rol. Refresh/logout no tienen DTO de body: los campos enviados no seleccionan identidad ni proporcionan la credencial, se ignoran; utilizar siempre `{}`.
+## Funcionalidades principales
 
-Registro público asigna exclusivamente `estudiante`. Registro duplicado y reenvío para cuenta inexistente/verificada/restringida conservan el 202 genérico. Forgot mantiene la misma respuesta para cuenta inexistente/no elegible y cuota por cuenta. **202 no confirma envío, recepción ni lectura**, tampoco aunque su texto mencione instrucciones; puede haber fallo posterior al aceptar el trabajo. Reset no verifica correos pendientes, no inicia sesión y no entrega tokens de acceso nuevos: tras 200 se realiza login con la contraseña nueva.
+**Implementadas**
 
-### Disponibilidad y requisitos reales
+- Registro de estudiantes, verificación del correo y reenvío de códigos.
+- Inicio de sesión, rotación de refresh tokens, detección de reutilización y cierre de sesión.
+- Recuperación y restablecimiento de contraseña, con revocación de sesiones.
+- Autenticación de rutas privadas, autorización por rol y consulta del perfil propio.
+- Envío SMTP, limitación de solicitudes con Redis y comprobaciones operativas.
+- Endpoint de salud y documentación interactiva con Swagger.
 
-Las ocho operaciones de `auth` requieren `AUTH_HTTP_ENABLED=true`, modo directo (`AUTH_BEHIND_PROXY=false`), Redis confiable y los índices de identidad instalados y compatibles en MongoDB; se comprueban solo en lectura. Login/refresh/logout/forgot/reset requieren además la colección `sesiones` existente. Register/resend/forgot exigen adaptador SMTP real configurado y preflight de conexión/TLS/autenticación; SMTP caído bloquea esos endpoints antes de aceptar. Verify/login/reset no dependen de un envío de correo en esa petición. Refresh/logout requieren `AUTH_BROWSER_ORIGIN` configurado. Login/refresh/logout validan la configuración segura de cookie.
+**Previstas**
 
-`GET /users/me` está registrado y protegido por JWT/identidad/rol incluso con `AUTH_HTTP_ENABLED=false`; no consume Redis ni hereda el interruptor operativo de las rutas `auth`. Si MongoDB no permite verificar la identidad, falla cerrado. No existe una blacklist ni se consulta la sesión refresh para autorizar esta ruta.
+- Consulta y organización de cursos, módulos, lecciones y flashcards.
+- Evaluaciones, actividades y entregas de proyectos.
+- Seguimiento del progreso y resultados del estudiante.
 
-**Snapshot local de cierre 3G (2026-11-21):** validación de configuración aprobada sin mostrar secretos; interruptor HTTP de auth deshabilitado, SMTP deshabilitado y Origin de navegador sin configurar. Por ello las ocho operaciones `auth` permanecen bloqueadas con 503 y se excluyen de Swagger en esta configuración. `/users/me` exige un JWT válido y usuario elegible; no se comprobó un servidor de desarrollo escuchando ni se habilitaron rutas. Se verificó su funcionamiento mediante aplicaciones Nest aisladas con configuración explícita, MongoDB/Redis de prueba y Mailpit. TTL efectivos locales: acceso 900 s, familia refresh 604800 s, recuperación 900 s; Secure local false (desarrollo). Ninguna opción privada fue modificada. Este snapshot no equivale a disponibilidad de una API pública ni a configuración de producción.
+Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints en la estructura actual del repositorio.
 
-### Errores y cabeceras para Next.js
+## Tecnologías utilizadas
 
-Enviar `Content-Type: application/json` en los POST. Login/refresh/logout/forgot/reset lo exigen explícitamente (415 en caso contrario). Las respuestas de error del filtro tienen `{ statusCode, message, path, timestamp }`; `message` puede ser cadena o lista de errores DTO. No deben interpretarse errores genéricos como evidencia de existencia de cuenta.
+- **Node.js 22, NestJS 11 y TypeScript:** aplicación y API REST.
+- **MongoDB 8.0 y Mongoose:** persistencia documental y transacciones.
+- **Redis 7.4:** control de frecuencia de solicitudes.
+- **Argon2id y JWT HS256:** protección de contraseñas y autenticación.
+- **Nodemailer y Mailpit:** transporte SMTP y captura de correo en pruebas locales.
+- **Jest y Supertest:** pruebas unitarias y de integración HTTP.
+- **Docker Compose y Swagger/OpenAPI:** entorno local y documentación de la API.
 
-| Estado | Uso real |
-|---|---|
-| 400 | DTO inválido; verify: código inválido/expirado/usado/restringido (`No se pudo verificar el código`); reset: token inválido/expirado/usado/revocado o identidad incompatible (`Solicitud de restablecimiento no válida.`). |
-| 401 | Login: `Credenciales no válidas.` para inexistente, contraseña incorrecta, no verificado o restringido. Refresh: `Sesión no válida.` y cookie eliminada. Perfil: `Autenticación no válida.` para Bearer/JWT/identidad inválidos. |
-| 403 | Perfil sin rol aprobado: `Acceso no permitido.`; Origin no autorizado/ausente cuando obligatorio o `Sec-Fetch-Site: cross-site` en las rutas que aplican esa política. |
-| 415 | Falta JSON en login/refresh/logout/forgot/reset. |
-| 429 | Cuota por origen excedida (`Límite de solicitudes alcanzado`). La cuota por cuenta de forgot responde 202, sin enumeración. No se promete una cabecera Retry-After. |
-| 503 | Ruta operativamente deshabilitada, índices/dependencias/protecciones no disponibles; mensaje público sanitizado. Refresh/logout no confirman éxito ni eliminan cookie por un fallo de infraestructura. |
+## Arquitectura
 
-`Authorization: Bearer <accessToken>` se necesita en `/users/me` y futuras rutas privadas, no para refresh/logout. Bearer duplicado o ambiguo se rechaza; cookies/query/body no sustituyen esa cabecera. Las respuestas de login/refresh, perfil y las rutas de sesión/recuperación evitan caché con `Cache-Control: no-store`; login/refresh/logout también establecen `Pragma: no-cache` en sus respuestas normales.
+El backend se organiza en módulos de autenticación HTTP, identidad, usuarios y salud. Los casos de uso de identidad se separan de los controladores y de la persistencia; seguridad y limitación de solicitudes son componentes compartidos.
 
-### Cookie, vigencias y ciclo de sesión
+MongoDB almacena usuarios, tokens de cuenta y sesiones. Redis mantiene las cuotas de solicitudes. El frontend consume la API REST y no accede directamente a estas bases de datos.
 
-Cookie `lethics_refresh`: HttpOnly, host-only (sin Domain), `SameSite=Strict`, `Path=/api/v1/auth`, Secure obligatorio en producción, configurable en desarrollo. Se establece en login/refresh; el refresh nunca aparece en JSON. La familia dura inicialmente siete días desde el login, configurable hasta ese máximo. Rotar no prolonga esa expiración absoluta. Cookie ausente, duplicada o no canónica no autentica refresh. Logout es idempotente para cookie ausente/desconocida/expirada/revocada, pero sigue exigiendo Origin/JSON/cuota y disponibilidad de infraestructura.
+La estructura principal se encuentra en [src/modules](src/modules), [src/infrastructure](src/infrastructure) y [src/config](src/config). Los módulos educativos se incorporarán siguiendo esta organización.
 
-Access JWT HS256: firma, issuer/audience y claims `sub`, `iss`, `aud`, `iat`, `exp`, `jti` estrictos; vigencia máxima 15 minutos. Logout y reset invalidan renovación, **no los JWT ya emitidos**: pueden seguir accediendo hasta expirar mientras usuario/rol sigan elegibles. Logout revoca la familia identificada; reset revoca todas las sesiones del usuario. La cuenta no verificada no puede iniciar sesión ni consultar perfil privado. El código de verificación vence en cinco minutos, permite cinco fallos, es de un solo uso; reenvío mínimo 60 s, revoca el anterior y conserva cuotas. El token de recuperación vence inicialmente en 15 minutos, se sustituye al emitir otro y es de un solo uso; su límite por cuenta tampoco se reinicia al solicitar nuevamente.
+## Requisitos previos
 
-### Secuencia de consumo desde Next.js
+- Node.js **22.x** y npm.
+- Docker con Docker Compose; Docker Desktop en Windows.
+- Puertos locales disponibles: **3000** para la API, **27018** para MongoDB y **6380** para Redis.
+- Para las pruebas SMTP con Mailpit: OpenSSL en `PATH` o indicado mediante `OPENSSL_BIN`.
 
-1. Enviar registro sin `rol`; mostrar confirmación genérica y el formulario del código de correo. Verify no inicia sesión. Resend conserva la respuesta genérica aunque el intervalo/cuota impidan emitir otro mensaje.
-2. Login devuelve access en JSON y el navegador administra Set-Cookie. Mantener access en memoria. Consultar perfil con Bearer; no construir permisos a partir de un rol editable del cliente.
-3. Renovar con POST JSON `{}` y la cookie administrada por el navegador, sin enviar refresh en JSON. Conservar el access nuevo y descartar el anterior de memoria. La cookie se rota automáticamente.
-4. Usar **single-flight de refresh**, también entre pestañas: solo una solicitud consume cada cookie vigente. Dos renovaciones simultáneas legítimas pueden provocar revocación familiar. Ante un 401 privado, como máximo una renovación coordinada y un reintento de la operación; 403 no se corrige renovando. Timeout/respuesta de refresh perdida tiene resultado incierto: no repetir automáticamente con la credencial anterior; solicitar login si no puede recuperarse un estado confiable.
-5. Logout usa JSON `{}` y cookie; tras 204 borrar access/perfil en memoria. Un 503 significa cierre no confirmado. Borrar solo el estado local no revoca la sesión del servidor.
-6. Forgot solo recibe correo y muestra el mensaje genérico. El usuario introduce el token recibido por correo y `nuevaContraseña` en reset. No colocar credenciales en URL/query ni en telemetría. Tras 200 limpiar el estado local y solicitar nuevo login; una cookie antigua todavía presente ya no renueva y se elimina al recibir 401 de refresh.
+Los servicios de datos se ejecutan en Docker y NestJS se ejecuta en el equipo anfitrión. El replica set local de un nodo permite transacciones, pero no proporciona alta disponibilidad.
 
-Ejemplo **para un navegador con API ya accesible en el mismo origen aprobado** (no configura un proxy ni habilita CORS):
+## Instalación
 
-```ts
-const response = await fetch('/api/v1/auth/login', {
-  method: 'POST', credentials: 'same-origin', cache: 'no-store',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ correo, contraseña }),
-});
-// Tras comprobar response.ok, conservar accessToken solo en memoria.
-const profile = await fetch('/api/v1/users/me', {
-  headers: { Authorization: `Bearer ${accessToken}` }, cache: 'no-store',
-});
-// Refresh/logout: mismo POST JSON con credentials y body JSON.stringify({}).
-```
-
-**Origin/CORS aún limitan el despliegue real de Next.js.** CORS no está habilitado: configurar `AUTH_BROWSER_ORIGIN` permite comprobar Origin, pero no autoriza peticiones cross-origin del navegador ni sus preflight. Otro puerto ya constituye otro origen. El navegador genera Origin; JavaScript cliente no debe intentar falsificarlo. Refresh/logout exigen siempre el valor exacto aprobado, incluso desde CLI/SSR; login/forgot/reset lo validan si se presenta y rechazan cross-site. Register/verify/resend no incorporan una comprobación Origin específica adicional en su guard actual. SameSite Strict no admite una integración cross-site por habilitar `credentials: include`. Tampoco se confía en X-Forwarded-For: el limitador usa el socket directo.
-
-No hay todavía topología Next.js/BFF/proxy aprobada. Si se aprueba un BFF/SSR, habrá que definir explícitamente propagación de Cookie/Set-Cookie, validación Origin, identificación del origen y cuotas: un fetch del servidor Next no hereda automáticamente las cookies del navegador y el backend verá la IP del BFF. Los ejemplos de mismo origen no afirman que esa infraestructura exista hoy. No se activan CORS ni trust proxy como parte de este cierre.
-
-No guardar access/refresh, contraseñas, códigos ni tokens de recuperación en localStorage/sessionStorage/URLs. El refresh es solo cookie HttpOnly; no intentar leer Set-Cookie desde JavaScript. Evitar cachear respuestas privadas o capturar secretos en logs, analítica, reportes de errores o estado persistido. El almacenamiento en memoria no elimina la necesidad de prevenir XSS.
-
-### Contrato para módulos educativos
-
-[AccessControlModule](src/modules/auth/access-control.module.ts) instala globalmente [JwtAuthGuard](src/modules/auth/jwt-auth.guard.ts) antes de [RolesGuard](src/modules/auth/roles.guard.ts). La aplicación principal ya los incorpora; un host Nest independiente debe importar ese módulo para instalar el mismo comportamiento. Cada petición privada valida JWT e identidad actual en MongoDB. Las rutas nuevas de controladores Nest son privadas por defecto. No hace falta acceder a modelos de IdentityModule para obtener el estudiante.
-
-Importar [Roles, Public, CurrentUser y AuthenticatedUser](src/modules/auth/access-control.ts). Aplicar `@Roles('estudiante')` a los controladores/métodos educativos que requieran ese rol; `@CurrentUser() estudiante: AuthenticatedUser` proporciona un objeto inmutable `{ id, rol }` obtenido de MongoDB. El identificador de confianza es `estudiante.id`; rol de body/query/JWT no concede permisos. `@Public()` omite autenticación y autorización por rol para la ruta; debe reservarse a contenido expresamente público. `@Public(false)` permite proteger un método dentro de un controlador público. Sin `@Roles` se exige identidad, pero no un rol concreto; `@Roles()` sin argumentos deniega todos. Solo `estudiante` está aprobado, sin operaciones administrativas publicadas.
-
-Para progreso, intentos o entregas propias, el servicio educativo debe comprobar **pertenencia del recurso al estudiante autenticado** mediante la relación ya aprobada de su modelo. No sustituir ese id por un identificador de usuario enviado por el frontend. Un guard de rol permite autenticar al estudiante, no acceder a los recursos de otro estudiante. El identificador de un recurso también requiere autorización de pertenencia antes de leer o modificar. Este apartado no define nuevos campos educativos ni modifica cursos, módulos, lecciones o flashcards.
-
-### Límites y prioridades antes del despliegue
-
-| Prioridad | Pendiente / garantía actual |
-|---|---|
-| Alta, antes de exponer a usuarios | Aprobar topología Next.js, política Origin/CORS/proxy y HTTPS/cookies; seleccionar/configurar SMTP de producción, validar secretos y readiness de infraestructura. Mailpit solo prueba captura SMTP local. |
-| Alta, si se requiere recuperación durable | Correo sin outbox/cola durable: una caída abrupta puede perder solicitudes aceptadas o dejar token sin enviar. El cierre ordenado drena trabajo, pero no garantiza entrega ante caída. Nueva arquitectura/modelo requieren aprobación. |
-| Alta para el cliente | Refresh single-flight y tratamiento de resultado incierto; carreras legítimas pueden revocar la familia por la política estricta sin gracia. |
-| Media, operación de sesiones | Definir retención/purga e índices de sesiones con medición y autorización. Conservar hashes revocados mientras pueda haber sucesores válidos para demostrar reutilización; actualmente no hay purga/TTL automática y el historial crece. Considerar recuperación de snapshots sin revivir credenciales. |
-| Límite aceptado de diseño | JWT previos siguen válidos hasta expirar; el cambio de contraseña/logout no afirma revocación instantánea. Los guards sí consultan elegibilidad/rol actuales. |
-| Media, dimensionamiento y producto | Coste Argon2id de coordinación login/reset, cuotas/TTL y política adicional de contraseña deben acordarse para producción. Respuestas genéricas no prometen tiempo constante frente a carga compartida. |
-| Bloqueante para administración | Roles y permisos administrativos pendientes; no publicar operaciones administrativas. |
-
-Se conserva la cobertura anterior de criptografía, rotación/reutilización, pertenencia a familia, DTO, Redis/Mongo fail closed, Origin/cookies y respuestas sin secretos. El único vacío agregado a pruebas en 3G es el recorrido completo de una cuenta registrada por HTTP en [Mailpit](test/mailpit.integration.spec.ts), usando los guards globales reales y las utilidades aisladas existentes.
-
-**Cierre 3G (2026-11-21): módulo funcionalmente cerrado para desarrollo académico, sin problemas críticos identificados en el alcance validado.** `npm.cmd run build` y `npm.cmd run lint` aprobados. Única ejecución completa mediante `node scripts/mailpit.cjs suite` → `npm test -- --detectOpenHandles`: **296/296 pruebas en 28 suites**, 0 fallidas, 0 omitidas, 145.966 s, sin advertencias de recursos abiertos. Se verificaron 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red temporal eliminada. Redis conserva TTL en namespaces exclusivos de prueba, sin FLUSH ni eliminación de cuotas compartidas. `git diff --check` aprobado; rama conservada, sin escrituras de Git. Únicos archivos cambiados: este README, la prueba Mailpit y arquitectura local ignorada. Ningún cambio de aplicación, configuración privada, datos reales, módulos educativos o volúmenes. Calidad del cierre: 8.5/10. Se recomienda PR de `feat/auth-login-sessions` hacia `dev`, sin abrirlo automáticamente. Commits propuestos: prueba del recorrido completo y documentación de contratos, separados por responsabilidad; arquitectura local queda fuera de Git. Este cierre no certifica preparación para producción ni habilita HTTP/CORS/proxies, y no avanza de fase.
-
-## Fase 3F: recuperación segura de contraseña
-
-Se reutilizan `IdentityModule`, `SecurityModule`, `tokens_cuenta`, Argon2id, el transporte SMTP y los controles HTTP existentes. No se añaden colecciones, campos, índices automáticos ni dependencias. Las rutas están marcadas como operaciones públicas de autenticación; mantienen los guards operativos, Redis fail closed, filtro de excepciones, JSON obligatorio, política de Origin de login (si se presenta debe coincidir; cross-site rechazado), CORS y proxies deshabilitados. No leen credenciales de cookies ni de query.
-
-| Endpoint | Cuerpo | Resultado |
-|---|---|---|
-| `POST /api/v1/auth/password/forgot` | `{ "correo": "student@example.test" }` | 202, mensaje genérico, sin confirmar existencia ni entrega. |
-| `POST /api/v1/auth/password/reset` | `token` recibido por correo y `nuevaContraseña` | 200 `Contraseña restablecida.` después de confirmar la transacción. |
-
-Token incorrecto, vencido, revocado, usado, de otro propósito o asociado a una cuenta incompatible: 400 uniforme. DTO inválido: 400; cuota por origen: 429; infraestructura obligatoria no disponible: 503 sanitizado. Las respuestas llevan `Cache-Control: no-store`. No se admiten usuarioId, rol ni otros campos adicionales en el cuerpo. La contraseña conserva exactamente la política del registro: cadena no vacía, máximo 1024 caracteres, sin normalización de su contenido; no se incorpora una política de complejidad nueva.
-
-### Solicitud y entrega sin enumeración directa
-
-Se normaliza correo con trim/lowercase. Antes de aceptar se comprueban índices ya instalados, las tres colecciones existentes, Redis y disponibilidad SMTP/TLS/autenticación para todos los destinatarios por igual. `forgot` permanece bloqueado sin transporte SMTP real configurado; `reset` no necesita SMTP para consumir una credencial ya emitida. Swagger solo documenta las operaciones habilitadas según esta política y no incluye tokens reales.
-
-La búsqueda de la cuenta, emisión y envío se difieren fuera de la respuesta HTTP para no esperar SMTP solamente cuando existe la cuenta. Se aceptan como máximo 100 tareas en memoria por proceso; saturación da 503 independiente del destinatario. La cuota por correo se aplica a direcciones existentes e inexistentes y su rechazo también da el mismo 202. Solo se envía a cuentas verificadas elegibles según la política ya usada en login; no se activa una cuenta pendiente o restringida. El mismo cuerpo/estado se usa para inexistentes, no verificadas, cuota de cuenta y rechazo de destinatario. Esto evita la diferencia directa de esperar entrega, sin prometer tiempo constante frente a carga o efectos de recursos compartidos.
-
-**202 confirma aceptación de una solicitud, nunca entrega.** Un fallo posterior de MongoDB o SMTP se registra de forma genérica, sin dirección, token, hash, contraseña ni error del proveedor. El error SMTP o resultado incierto revoca mediante condición de hash la credencial emitida; no invalida una emisión posterior concurrente. Si la revocación no puede confirmarse por un fallo de MongoDB, se registra fallo genérico y no se afirma revocación ni entrega; persiste el límite de expiración. Los reintentos SMTP reutilizan el mensaje/token y la política existente: máximo dos intentos, espera de 500 ms y ventana de 15 segundos; solamente errores demostrablemente previos al mensaje o rechazos temporales seguros. DATA/resultado incierto nunca se reintenta automáticamente. Message-ID no garantiza deduplicación ni entrega al buzón.
-
-El trabajo es **solo en proceso, no durable**: una caída brusca puede perder una solicitud aceptada o dejar un token persistido sin correo. No se almacena texto plano ni una cola en `tokens_cuenta`; el usuario debe solicitar otra recuperación, sujeto a cuota. En cierre ordenado se rechazan solicitudes nuevas y se esperan las tareas en `beforeApplicationShutdown`, antes de cerrar SMTP/MongoDB/Redis; el arranque habilita shutdown hooks. Un SIGKILL, caída de máquina o plazo del orquestador insuficiente no permite ese drenaje. Recuperación durable requeriría una propuesta de outbox/worker y modelo adicional aprobado; queda pendiente, sin implementación en esta fase.
-
-### Token y consistencia
-
-Token aleatorio de 32 bytes (256 bits), base64url canónico de 43 caracteres. Solo se guarda SHA-256 con dominio `lethics:password-reset:` y tipo `recuperacion`, separado de JWT, verificación HMAC y refresh. El correo entrega la credencial en texto, sin URL construida a partir de Host/Forwarded; el frontend deberá recogerla en un formulario y enviarla exclusivamente en el cuerpo HTTPS, sin query, logs ni almacenamiento persistente.
-
-Se usa un único registro de recuperación por usuario, con `_id` derivado de SHA-256 de un dominio fijo más el identificador del usuario (primeros 12 bytes). El identificador no es una credencial. El upsert condiciona usuario/tipo; una colisión con otro documento falla cerrado, sin sobrescribirlo. Sustituir su hash invalida el token anterior; no se conserva historial de emisiones de recuperación. Los documentos anteriores de recuperación ajenos a ese registro se revocan transaccionalmente. Las solicitudes simultáneas escriben el mismo documento; solo el hash más reciente es válido y un mensaje anterior podría llegar después del más reciente. Las carreras iniciales de upsert por clave duplicada se reintentan como máximo dos veces adicionales, sin generar otro token. La verificación de correo y sus cuotas no se alteran.
-
-`reset` deriva la identidad exclusivamente del token persistido y comprueba propósito, expiración con reloj del servidor, uso/revocación y elegibilidad. Una transacción snapshot/majority consume condicionalmente el token, actualiza el hash Argon2id, invalida otras recuperaciones activas y revoca todas las familias de sesión del usuario. Cualquier fallo revierte el conjunto; dos reset con el mismo token solo permiten un éxito. La escritura de sesiones comparte los documentos de rotación y cubre carreras con refresh. No afecta sesiones de otras cuentas.
-
-Para cerrar la carrera entre un login que validó la contraseña antigua y un reset, login genera una nueva codificación Argon2id con sal de la misma contraseña y la escribe junto con la sesión. Es una escritura real del campo aprobado, no un `$set` sin cambio ni un campo nuevo. Login y reset se serializan sobre el usuario; en reintentos se revalida la contraseña si cambió el hash observado. Se conservan los logins simultáneos válidos. Esto añade un hash Argon2id por login correcto y posibles verificaciones en conflictos; dimensionar CPU y conservar cuotas. Los JWT de acceso previamente emitidos pueden seguir válidos hasta expirar (máximo 15 minutos); no se introduce blacklist ni se afirma revocación inmediata.
-
-### Configuración operativa y pruebas
-
-Sin modificar `.env`, se añaden opciones con valores predeterminados: `PASSWORD_RECOVERY_TTL_SECONDS=900` (60–900, múltiplo de 60), `RATE_LIMIT_PASSWORD_FORGOT_MAX=10` y `RATE_LIMIT_PASSWORD_RESET_MAX=10`, cada una con `*_WINDOW_SECONDS=600`; `RATE_LIMIT_PASSWORD_ACCOUNT_MAX=3`, `RATE_LIMIT_PASSWORD_ACCOUNT_WINDOW_SECONDS=3600`. Las ventanas nuevas no superan 3600 segundos. Son cuotas separadas; no se cambian las anteriores ni se reduce la cuarentena Redis. Las claves de cuenta contienen un HMAC de la dirección normalizada, nunca el correo en claro. Deben acordarse los valores de producción y monitorizar los fallos genéricos y saturación sin datos sensibles.
-
-Pruebas específicas: `test/password-recovery.spec.ts`, `test/password-recovery.integration.spec.ts`, `test/login.integration.spec.ts`, `test/smtp-verification.spec.ts`. Integración SMTP real local: `node scripts/mailpit.cjs test`; suite completa: `node scripts/mailpit.cjs suite` (invoca `npm test -- --detectOpenHandles`). Se reutilizan MongoDB UUID, propiedad estricta de limpieza, namespace Redis exclusivo y Mailpit independiente, únicamente con `example.test`. Ninguna prueba utiliza correo real ni borra claves compartidas.
-
-Archivos de este incremento:
-
-| Responsabilidad | Archivos |
-|---|---|
-| Recuperación y DTO (nuevos) | [servicio](src/modules/identity/application/password-recovery.service.ts), [DTOs](src/modules/identity/presentation/dto/password-recovery.dto.ts) |
-| HTTP y arranque | [controlador](src/modules/auth/auth.controller.ts), [guard](src/modules/auth/auth-http.guard.ts), [política](src/modules/auth/auth-http.policy.ts), [errores](src/modules/auth/auth-http.errors.ts), [Swagger](src/configure-app.ts), [shutdown](src/main.ts) |
-| Identidad y seguridad | [módulo](src/modules/identity/identity.module.ts), [fachada](src/modules/identity/application/identity-operations.service.ts), [login](src/modules/identity/application/login.service.ts), [tokens opacos](src/infrastructure/security/opaque-token.service.ts) |
-| Correo | [contrato](src/modules/identity/application/verification-mailer.ts), [SMTP](src/modules/identity/infrastructure/smtp-verification-mailer.ts), [desarrollo](src/modules/identity/infrastructure/development-verification-mailer.ts), [pruebas](src/modules/identity/infrastructure/test-verification-mailer.ts) |
-| Configuración y límites | [entorno](src/config/environment.ts), [Redis](src/infrastructure/rate-limit/origin-rate-limit.service.ts) |
-| Pruebas nuevas y ampliadas | [contratos](test/password-recovery.spec.ts), [integración](test/password-recovery.integration.spec.ts), [SMTP](test/smtp-verification.spec.ts), [Mailpit](test/mailpit.integration.spec.ts) |
-| Documentación | Este README y `docs/arquitectura.md` local, ignorado por Git. |
-
-Validación final 3F (2026-11-21): build y lint aprobados. Pruebas específicas ampliadas: 67/67 en 5 suites (37.339 s). SMTP/Mailpit y regresiones del transporte: 53/53 en 4 suites (34.768 s). Única suite completa final `npm test -- --detectOpenHandles`: **295/295 pruebas en 28 suites**, 0 fallidas, 0 omitidas, 150.178 s; sin advertencias de recursos abiertos. Limpieza comprobada: 0 bases UUID temporales, 0 contenedores Mailpit, 0 directorios de certificados y redes temporales eliminadas. Redis conserva expiración en namespaces exclusivos de prueba; no se usa FLUSH ni se borran cuotas compartidas. `git diff --check` aprobado, rama `feat/auth-login-sessions` conservada y documentación local ignorada. No hubo escrituras de Git ni cambios privados/datos reales/volúmenes/módulos educativos. Calidad del incremento: 8.5/10; límites de durabilidad, JWT y coste Argon2id documentados, sin fallos críticos identificados ni avance de fase.
-
-## Fase 3E: guards y autorización
-
-`AccessControlModule` instala globalmente `JwtAuthGuard` y después `RolesGuard`: las rutas de controladores Nest son privadas por defecto. `@Public()` mantiene públicas las rutas existentes de `auth` y `health`; no desactiva `AuthHttpGuard`, las cuotas Redis, las comprobaciones operativas ni las restricciones de Origin de login/refresh/logout. Swagger continúa disponible en `/docs` conforme a su configuración anterior. `@Public(false)` permite proteger un método dentro de un controlador público.
-
-El guard solo acepta un token en `Authorization: Bearer <access-token>` (sin alternativas en cookies, query o body). Rechaza cabeceras duplicadas/ambiguas. Reutiliza `AccessTokenService`: firma HS256, issuer/audience configurados, expiración y claims `sub`, `jti`, `iat`, `exp` válidos. `sub` debe identificar un ObjectId. Consulta MongoDB en cada petición: usuario existente, correo verificado con fecha válida y no futura, y estado compatible con la misma política de login/sesiones. Una cuenta verificada heredada sin `seguridadVerificacion` sigue admitida; un estado presente parcial o inválido se rechaza. No se inventan estados de suspensión que el modelo todavía no define. Autenticación inválida: 401 uniforme; fallo de consulta: 503 sanitizado y sin acceso.
-
-`@Roles('estudiante')` exige el rol persistido en MongoDB; no usa roles del JWT, parámetros ni cabeceras del cliente. `estudiante` es el único rol aprobado para metadata de permisos. Identidad autenticada sin rol permitido: 403. Sin `@Roles`, una ruta privada exige identidad válida pero no añade una restricción de rol; `@Roles()` sin argumentos deniega todos. No se publican funciones administrativas.
-
-`GET /api/v1/users/me` exige Bearer y rol `estudiante`, retorna exclusivamente `{ id, nombre, correo, rol }` del propio usuario y establece `Cache-Control: no-store`. No acepta identificadores ajenos para seleccionar el perfil. Una segunda lectura comprueba nuevamente elegibilidad y rol antes de responder. La proyección explícita evita exponer hashes, estados internos o el contenido libre de `perfil`, incluso con consultas lean. Swagger documenta Bearer y las respuestas 200/401/403/503 sin tokens ni credenciales de ejemplo.
-
-### Integración en módulos futuros
-
-Los controles están en [access-control.module.ts](src/modules/auth/access-control.module.ts), [jwt-auth.guard.ts](src/modules/auth/jwt-auth.guard.ts), [roles.guard.ts](src/modules/auth/roles.guard.ts) y [access-control.ts](src/modules/auth/access-control.ts). Con la aplicación principal, los guards ya son globales; un host Nest independiente debe importar `AccessControlModule` para instalar ambos. Los módulos educativos podrán usar `@Roles('estudiante')` y `@CurrentUser() user: AuthenticatedUser`. El contexto inmutable contiene solo `id` y `rol` obtenidos desde MongoDB, sin secretos. No necesitan consultar los modelos internos de identidad. Cuando se requiera consultar un perfil, IdentityModule exporta [AuthenticatedIdentityService](src/modules/identity/application/authenticated-identity.service.ts), que devuelve únicamente la proyección segura. La autorización por propiedad de recursos deberá utilizar el `id` validado; el guard de roles no la sustituye. No se modifican módulos educativos.
-
-### Garantías de revocación y dependencias
-
-Logout y la revocación familiar impiden renovar refresh tokens. **Un access JWT ya emitido puede seguir autenticando hasta expirar (15 minutos), también en `/users/me`**, si la cuenta continúa elegible. El guard no consulta sesiones ni inventa una blacklist; sí consulta la identidad/rol actuales en MongoDB. No hay revocación instantánea de access por logout. `/users/me` no consume Redis ni depende de las cuotas de los endpoints de autenticación: no se añade una cuota nueva. MongoDB no disponible impide autenticar. Las garantías fail closed de Redis para login/refresh/logout permanecen sin cambios. CORS, proxies, cookies y restricciones de Origin existentes no se alteran.
-
-Pruebas específicas: `test/access-control.spec.ts` y `test/sessions.integration.spec.ts`; esta última reutiliza bases UUID y namespaces Redis exclusivos mediante las variables de integración existentes. Cubren JWT y claims inválidos, Bearer ausente/manipulado/duplicado, metadata pública/privada, contexto mínimo, rol persistido, cuentas incompatibles, perfil seguro, fallos de consulta y JWT después de logout. La ejecución completa se realiza con `node scripts/mailpit.cjs suite`, que también prepara y limpia Mailpit aislado sin enviar correo real. Los apartados siguientes conservan resultados históricos de sus fases.
-
-Validación final 3E (2026-11-21): `npm.cmd run build` y `npm.cmd run lint` aprobados. Última ejecución específica: 55/55 pruebas en 2 suites, 0 fallidas/omitidas, 24.088 s. Única suite completa final `npm test -- --detectOpenHandles`: **272/272 pruebas en 26 suites**, 0 fallidas, 0 omitidas, 136.482 s, sin advertencias de recursos abiertos. Se verificaron 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red temporal eliminada. Redis conserva TTL en namespaces exclusivos de prueba, sin FLUSH ni borrado de claves compartidas. `git diff --check` aprobado y rama conservada, sin escrituras de Git. No se modificaron configuración privada, datos/cuotas reales, esquemas, módulos educativos ni volúmenes. Se preservaron los cambios locales previos de 3C/3D; documentación local ignorada por Git. Fase 3E validada dentro de su alcance, sin avanzar al siguiente incremento.
-
-## Fase 3D: rotación y revocación de sesiones
-
-Se añaden `POST /api/v1/auth/refresh` y `POST /api/v1/auth/logout`, reutilizando login, la cookie `lethics_refresh`, JWT HS256, tokens opacos, la fachada y Redis. No se modifica el esquema aprobado ni se crea otra colección. Se conservan los cambios locales de Fase 3C y los contratos anteriores. Las secciones históricas siguientes describen el alcance de cada incremento; esta sección documenta el estado de renovación/logout.
-
-### Contratos y protección HTTP
-
-Ambas rutas exigen `AUTH_HTTP_ENABLED=true`, modo directo sin proxies, infraestructura lista y **`AUTH_BROWSER_ORIGIN` configurado**. Si falta ese Origin de confianza, permanecen bloqueadas con 503 y no aparecen en Swagger. Cada petición debe tener `Content-Type: application/json` y `Origin` exactamente igual al configurado; enviar `{}` como cuerpo. Origin ausente/no autorizado o `Sec-Fetch-Site: cross-site` produce 403; otro tipo de contenido, 415. Se conserva CORS deshabilitado y no se confía en cabeceras de proxies. Las herramientas de línea de comandos también deben enviar el Origin autorizado; esa cabecera es protección de navegador, no reemplaza la posesión del refresh.
-
-El token se lee únicamente de la cookie existente, no de JSON, Authorization ni parámetros. Se exige codificación base64url canónica de 32 bytes; duplicados de la cookie se rechazan como credencial ambigua. No se añade cookie-parser ni dependencia nueva. Cookie HttpOnly, SameSite=Strict, Path=/api/v1/auth, sin Domain y Secure obligatorio en producción, igual que login. Las respuestas evitan caché y nunca incluyen refresh en JSON ni tokens/hashes en logs.
-
-| Operación | Resultado |
-|---|---|
-| Refresh válido | 200 con `accessToken`, `tokenType=Bearer`, `expiresIn`; nueva cookie refresh. |
-| Refresh ausente/manipulado/desconocido/expirado/revocado o cuenta no elegible | 401 `Sesión no válida.`, sin access token; se elimina la cookie. |
-| Logout confirmado | 204 sin cuerpo, revocación del lado servidor de la sesión lógica identificada y eliminación de cookie. |
-| Logout sin cookie válida o sin sesión correspondiente | 204 idempotente; elimina cookie, sin afirmar revocación de una sesión que no pudo identificarse. |
-| Cuota excedida / infraestructura insegura | 429 / 503. Un 503 no se presenta como logout confirmado ni borra la cookie fingiendo revocación. |
-
-Redis aplica cuotas nuevas independientes por origen: `RATE_LIMIT_REFRESH_MAX=30` y `RATE_LIMIT_LOGOUT_MAX=30`, cada una con ventana inicial de 600 s (`RATE_LIMIT_REFRESH_WINDOW_SECONDS` / `RATE_LIMIT_LOGOUT_WINDOW_SECONDS`, hasta 3600 s). Mantiene cuotas previas, cuarentena y fail closed. La cuota se aplica antes de consultar sesiones; solicitudes rechazadas por Origin/JSON se detienen antes de consumirla. No se usan locks ni historial de reutilización en Redis.
-
-### Rotación atómica e historial compatible
-
-Sobrescribir `refreshTokenHash` en el mismo documento perdería la evidencia del token anterior. En cambio, cada generación se conserva como un documento en **la misma colección `sesiones` y con los mismos campos**. Un login crea la raíz y una familia UUID. Refresh busca el hash SHA-256 separado por propósito, exige un único documento, fecha válida/no vencida, `revocadaEn=null`, familia conocida y usuario aún elegible con la misma política de login. Registros ambiguos por hash duplicado fallan con 503; estados heredados sin familia o incompatibles se rechazan sin inventar datos ni migrarlos.
-
-En una transacción con snapshot y escritura majority se consume condicionalmente el documento vigente (`revocadaEn=null` y no vencido), se marca revocado y se inserta otro documento con nuevo hash y **el mismo usuario, familia y expiraEn**. Nunca se sobrescribe el hash anterior ni se almacena el refresh en claro. `creadaEn` del sucesor registra su emisión. La expiración absoluta de siete días iniciales **no se prolonga** al rotar; un nuevo login independiente inicia otra familia. Una inserción fallida revierte la revocación anterior y no emite credenciales.
-
-Las transacciones concurrentes compiten por el mismo documento activo. Solo una puede consumirlo; al reintentarse la otra transacción encuentra el token ya revocado y aplica la política de reutilización. La revocación por familia escribe sus documentos activos, por lo que también entra en conflicto con una rotación concurrente del sucesor; no basta con una lectura previa fuera de transacción. Logout usa el mismo mecanismo transaccional para que no quede un sucesor renovable tras su confirmación.
-
-### Reutilización demostrable y alcance de revocación
-
-Presentar un token cuyo hash conservado ya tiene revocación demuestra **uso de una credencial invalidada**, aunque no demuestra robo ni distingue una carrera legítima, un reintento HTTP o un token anterior al logout. La política es conservadora: revoca los documentos activos de la familia y usuario correspondientes y confirma esa escritura **antes** de emitir 401. No se lanza el error dentro de la transacción, pues eso revertiría la revocación. Si la escritura falla, retorna 503 y no afirma que se haya revocado la familia. Un token aleatorio/manipulado que no corresponde a un hash conocido no identifica una familia y no provoca revocación colateral.
-
-No se revocan familias independientes del mismo usuario. Logout revoca la sesión lógica/familia identificada, también si la cookie corresponde a un ancestro ya rotado, para impedir que un sucesor quede activo. Logout repetido, expirado o ya revocado es idempotente. Una sesión heredada sin familia solo permite revocar su propio documento al hacer logout; no se adivinan grupos.
-
-Dos refresh simultáneos pueden producir 200 y 401: el perdedor revoca la familia, de modo que la cookie del ganador tampoco permitirá nuevas renovaciones. El frontend debe coordinar un único refresh en vuelo por sesión, incluidas pestañas, y evitar reintentos automáticos con la cookie anterior. Una respuesta perdida después del commit deja el mismo riesgo: repetir el token consumido se detecta como reutilización. No se implementa ventana de gracia ni se promete idempotencia HTTP.
-
-**Límite:** revocar refresh/familia no invalida inmediatamente los JWT de acceso ya firmados; conservan su expiración de hasta 15 minutos. No se añadió un guard de contenido ni una lista de revocación de access tokens. La verificación/estado de cuenta se reevalúa para cada refresh, pero cambios externos concurrentes de cuenta requieren la coordinación pendiente ya documentada en Fase 3C.
-
-### Retención, operación y pruebas
-
-La detección depende de conservar los hashes revocados mientras pueda existir un sucesor válido. No eliminarlos ni sobrescribirlos durante esa ventana. No se añade TTL, purga automática, índice ni migración real. El historial crece por cada rotación; antes de producción debe aprobarse retención/limpieza posterior a expiración y evaluar índices de búsqueda por hash y familia con datos representativos. Sin índices adicionales estas búsquedas pueden recorrer la colección; no se declara optimización sin medición. Restauraciones de datos anteriores pueden reactivar estados pasados y requieren un procedimiento operativo separado.
-
-Las pruebas usan MongoDB UUID y namespaces Redis exclusivos con las utilidades existentes, sin correos ni datos reales. Cubren éxito, expiración, revocación, manipulación/cookie duplicada/body ignorado, retención del historial y expiración absoluta, reutilización de ancestros, revocación de familia sin afectar otra, carreras refresh/refresh, refresh/logout y reutilización/rotación, logout repetido y posterior refresh, rollback de inserción, fallo de revocación, Redis, cuotas independientes, cookies y Origin/JSON. Una prueba unitaria comprueba específicamente que la revocación se confirme antes del 401.
-
-```powershell
-# Con variables de integración seguras existentes:
-node node_modules/jest/bin/jest.js --runInBand --runTestsByPath test/session-policy.spec.ts test/sessions.integration.spec.ts --detectOpenHandles
-npm.cmd run lint
-npm.cmd run build
-# Invoca npm test -- --detectOpenHandles con todas las integraciones y Mailpit efímero:
-node scripts/mailpit.cjs suite
-```
-
-Archivos nuevos: [session.service.ts](src/modules/identity/application/session.service.ts), [session-account-policy.ts](src/modules/identity/application/session-account-policy.ts), [session-policy.spec.ts](test/session-policy.spec.ts), [sessions.integration.spec.ts](test/sessions.integration.spec.ts). Cambios sobre Fase 3C: controlador, guard/política/errores HTTP, helper de cookie/Origin, fachada, IdentityModule, LoginService (solo comparte elegibilidad), limitador, configuración/Swagger, entorno de ejemplo y documentación local. No se cambió el esquema Mongoose ni los servicios criptográficos ni los módulos educativos.
-
-| Modificados en Fase 3D | Archivos |
-|---|---|
-| Aplicación e inyección | [login.service.ts](src/modules/identity/application/login.service.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [identity.module.ts](src/modules/identity/identity.module.ts) |
-| HTTP y Swagger | [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [login-http.policy.ts](src/modules/auth/login-http.policy.ts), [configure-app.ts](src/configure-app.ts) |
-| Cuotas y configuración | [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts), [environment.ts](src/config/environment.ts), [.env.example](.env.example) |
-| Documentación | Este README y [arquitectura.md](docs/arquitectura.md), local e ignorado por Git |
-
-Validación final Fase 3D (2026-11-21): lint y build aprobados. Pruebas nuevas: 10 unitarias aprobadas y 17 de integración aprobadas (la integración corregida terminó en 18,084 s). Regresiones específicas de login/limitador/permisos: 28 aprobadas en 3 suites (19,435 s). Única ejecución completa final de `npm test -- --detectOpenHandles`: **234 aprobadas en 25 suites, 0 fallidas y 0 omitidas** (129,2 s), sin advertencias de recursos abiertos. Limpieza posterior: 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados; red eliminada por Compose. Redis mantiene solo claves de pruebas aisladas con TTL. `git diff --check` aprobado. Rama y cambios locales previos conservados, sin escrituras de Git, configuración privada, datos/cuotas reales ni volúmenes. No se habilitó CORS ni proxies ni se avanzó a otra fase.
-
-## Fase 3C: login y creación de sesiones
-
-`POST /api/v1/auth/login` reutiliza Argon2id, JWT HS256, tokens opacos y la fachada de identidad. No implementa refresh, logout ni recuperación de contraseña. Conserva los contratos de registro/verificación/reenvío y los campos de las colecciones existentes. Como las otras rutas de identidad, exige `AUTH_HTTP_ENABLED=true`, origen directo y las comprobaciones operativas. Login no necesita transporte SMTP. Este cambio no modifica la configuración privada ni activa HTTP públicamente.
-
-Entrada JSON: `{"correo":"estudiante@example.test","contraseña":"contraseña-ficticia"}`. Correo usa trim/minúsculas; contraseña no se recorta ni normaliza. Se rechazan propiedades adicionales, incluido `rol`, correos no válidos y contraseñas vacías o mayores de 1024 caracteres. Respuesta 200: `{"accessToken":"<JWT de acceso>","tokenType":"Bearer","expiresIn":900}` más cookie HttpOnly; nunca refresh en JSON. Cliente: mantener el access token en memoria, sin recomendar almacenamiento persistente en localStorage. No registrar tokens, cookies, cuerpos de login ni hashes en logs del cliente, proxy o servidor.
-
-Usuario inexistente, contraseña incorrecta, correo sin verificar y estado de seguridad incompatible responden **401 `Credenciales no válidas.`**, sin cookie ni sesión. Se utiliza una verificación Argon2id contra un hash ficticio aleatorio preparado al iniciar para cuentas inexistentes/hashes inválidos; reduce diferencias obvias de trabajo, sin garantizar tiempos idénticos. No se expone existencia, rol o estado de cuenta. Una fecha de verificación debe ser válida y no futura. Se acepta una cuenta verificada heredada sin `seguridadVerificacion`; si ese campo está presente pero es parcial/inválido, login falla cerrado. Los contadores de verificación no se reinician ni se reutilizan como bloqueo de login. El modelo aprobado no tiene un campo general de bloqueo/suspensión: su definición y cambios concurrentes futuros requieren un acuerdo separado; no se inventó uno ni se atribuyó esa función a `perfil`.
-
-Redis limita la operación `login`, separada de register/verify/resend: **10 solicitudes por origen cada 600 s**, configurables mediante `RATE_LIMIT_LOGIN_MAX` y `RATE_LIMIT_LOGIN_WINDOW_SECONDS` (máximo 3600 s). La cuota se consume antes de DTOs, consultas y Argon2id. Solo se usa la IP del socket, sin confiar en cabeceras de proxies. Se mantienen cuarentena, persistencia y fail closed; cuota excedida da 429 y fallo del control da 503. Es un límite por origen, no una protección completa contra ataques distribuidos por cuenta. Las cuotas previas no se modifican. Cambiar parámetros/namespace/claves en un entorno operativo exige conservar las medidas de continuidad ya documentadas.
-
-JWT conserva `sub`, `iss`, `aud`, `iat`, `exp`, `jti`, algoritmo HS256 y validación de issuer/audience. `JWT_ACCESS_TTL_SECONDS` sigue siendo obligatorio; valor inicial 900 s, ahora validado entre 1 y 900 para asegurar expiración corta. Cada login genera un jti distinto. No se almacena el JWT en MongoDB ni se emiten roles desde el cliente. No se añadió un guard de contenido protegido: el consumo del access token en esos endpoints corresponde a otro incremento.
-
-Cada login correcto crea una sesión independiente en `sesiones`: `usuarioId`, `refreshTokenHash`, `creadaEn`, `expiraEn`, `revocadaEn=null`, `familia=<UUID>` y `_id`. Refresh usa los 32 bytes criptográficos del servicio existente y SHA-256 con separación por propósito `refresh`; solo persiste el hash. `AUTH_REFRESH_TTL_SECONDS` tiene **604800 s (7 días)** por defecto, valor operativo provisional configurable entre 1 y 604800 s. Los logins concurrentes crean sesiones/familias distintas, sin invalidar otras sesiones ni imponer un límite de dispositivos no acordado. En transacción se relee usuario/contraseña/estado y se inserta sesión; un fallo no devuelve credenciales. Los cambios futuros de restricciones/contraseña y revocación necesitarán coordinación explícita con sesiones y JWT, sin asumir que esta lectura de snapshot los serializa con escritores externos.
-
-Se comprueban índices existentes de identidad y existencia de `sesiones`; no se instala ningún índice ni se crea una colección al iniciar o hacer login. Si falta `sesiones`, se devuelve 503 antes de insertar, evitando su creación implícita por MongoDB. No se añade TTL: la expiración deberá validarse al consumir refresh en el siguiente incremento, y cualquier limpieza/índice requiere aprobación. Una pérdida de respuesta HTTP tras commit puede dejar una sesión válida cuyo refresh el cliente no recibió; este incremento no incorpora compensación ni reintento idempotente del login.
-
-### Cookie y navegador
-
-Cookie `lethics_refresh`: **HttpOnly**, **SameSite=Strict**, **Path=/api/v1/auth**, sin Domain (host-only), Expires/Max-Age ligados a la expiración de la sesión. `AUTH_REFRESH_COOKIE_SECURE` es false por defecto en desarrollo/test para HTTP local, y true obligatorio en producción. Producción requiere HTTPS; esta configuración no configura TLS ni habilita proxies de confianza. Las respuestas de login no deben almacenarse en caché (`Cache-Control: no-store`; éxito también `Pragma: no-cache`).
-
-CORS no estaba habilitado y permanece deshabilitado: no se agrega `*`, credentials global ni confianza en proxies. Login solo acepta `application/json` (415 en otro caso). Si el navegador envía Origin, debe coincidir exactamente con `AUTH_BROWSER_ORIGIN` (sin barra final); sin esa configuración se rechazan solicitudes con Origin. En producción ese Origin debe ser HTTPS. Se rechaza `Sec-Fetch-Site: cross-site` con 403 incluso si aparece un Origin configurado. Las herramientas sin Origin pueden usar JSON; ello no equivale a autenticación basada en esa cabecera. Para frontend se requiere despliegue del mismo origen o proxy local controlado. Antes de habilitar CORS entre orígenes o cookies entre sitios se debe acordar una política CSRF/CORS específica. Refresh/logout todavía no existen y necesitarán sus propias protecciones.
-
-### Validación reproducible
-
-Usar `LETHICS_IDENTITY_TEST_URI` y `LETHICS_REDIS_TEST_URL` seguros con los helpers existentes. Las pruebas de login crean solo `usuarios`, `tokens_cuenta` y `sesiones` dentro de la base UUID de esa ejecución, con namespace Redis exclusivo y TTL. No escriben datos reales ni envían correo.
-
-```powershell
-# Con las variables de integración seguras ya definidas:
-node node_modules/jest/bin/jest.js --runInBand --runTestsByPath test/login-http.spec.ts test/login.integration.spec.ts --detectOpenHandles
-npm run build
-npm run lint
-# Regresión completa con MongoDB/Redis aislados y Mailpit efímero:
-node scripts/mailpit.cjs suite
-```
-
-Pendiente para producción/siguiente incremento: rotación/consumo de refresh, revocación/logout, defensa CSRF de esas operaciones, guard de recursos protegidos, definición de suspensión de cuentas, medición de Argon2id y defensa frente a ataques distribuidos. Los JWT ya emitidos no tienen revocación inmediata implementada. No se avanzó a esas funcionalidades ni se modificaron módulos educativos.
-
-Validación de Fase 3C (2026-11-21): build y lint aprobados; pruebas nuevas de login 24/24 en 2 suites (19,829 s) y regresiones específicas de HTTP/limitador/permisos 39/39 en 3 suites (19,851 s). Única ejecución completa final mediante `npm test -- --detectOpenHandles`: **207 aprobadas en 23 suites, 0 fallidas y 0 omitidas** (124,333 s), sin advertencias de recursos abiertos. Comprobación posterior: 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red Mailpit eliminada, Redis con TTL de sus claves aisladas. `git diff --check` aprobado. Rama `feat/auth-login-sessions` conservada, sin escrituras de Git, datos reales, configuración privada ni volúmenes.
-
-### Archivos de Fase 3C
-
-| Cambio | Archivos |
-|---|---|
-| Creados: aplicación y HTTP | [login.service.ts](src/modules/identity/application/login.service.ts), [login.dto.ts](src/modules/identity/presentation/dto/login.dto.ts), [login-http.policy.ts](src/modules/auth/login-http.policy.ts) |
-| Creados: pruebas | [login-http.spec.ts](test/login-http.spec.ts), [login.integration.spec.ts](test/login.integration.spec.ts) |
-| Modificados: integración y HTTP | [identity.module.ts](src/modules/identity/identity.module.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [configure-app.ts](src/configure-app.ts) |
-| Modificados: configuración y cuotas | [environment.ts](src/config/environment.ts), [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts), [.env.example](.env.example) |
-| Documentación | Este README y [arquitectura.md](docs/arquitectura.md), local e ignorado por Git |
-
-## Incremento 7: confiabilidad de correo
-
-El envío continúa después del commit de usuario/token. Antes de este incremento se realizaba una sola llamada SMTP: un fallo dejaba la cuenta sin verificar y el token vigente, sin recuperación automática. Ahora el [adaptador existente](src/modules/identity/infrastructure/smtp-verification-mailer.ts) aplica una [política conservadora](src/modules/identity/infrastructure/smtp-delivery-policy.ts) de **dos intentos como máximo** por invocación, con una sola espera de **500 ms**. No se reejecutan registro, transacciones ni generación de códigos; no se descuentan emisiones o solicitudes adicionales por reintentar SMTP.
-
-| Fallo observado en Nodemailer 10.6.1 | Clasificación y actuación |
-|---|---|
-| `ESOCKET`, `originalCode=ECONNREFUSED`, `command=CONN` | Conexión rechazada antes del mensaje: admite un reintento. |
-| `EDNS`, `originalCode=EAI_AGAIN`, `command=CONN` | Resolución temporal antes de conectar: admite un reintento. |
-| `ETIMEDOUT`, `command=CONN`, `timeoutType=CONNECT_TIMEOUT` o `GREETING_TIMEOUT` | Fase anterior al mensaje demostrada: admite un reintento. |
-| Respuesta SMTP 4xx con `EENVELOPE` en `MAIL FROM`/`RCPT TO`, o `EPROTOCOL`/`ECONNECTION` en `EHLO`/`HELO` | Rechazo temporal explícito anterior a DATA: admite un reintento. |
-| Autenticación, incluso una respuesta temporal de AUTH; configuración, TLS/certificados; DNS permanente | No reintentar automáticamente; corregir la causa fuera de la solicitud. |
-| Respuesta 5xx, incluido destinatario rechazado | Rechazo permanente: no reintentar. |
-| Rechazo explícito durante DATA | Se conserva una política más restrictiva: no reintentar, incluso con 4xx. |
-| Timeout de socket, reset, desconexión genérica `CONN`, respuesta incompleta o error desconocido | Resultado incierto: detener los reintentos. Puede haberse aceptado el mensaje. |
-
-La clasificación usa metadatos del transporte, nunca búsquedas en el texto de un error ni la mera etiqueta «transitorio». `CONN` también aparece en fallos después de DATA y no acredita por sí solo que el mensaje no fue transmitido. Metadatos ausentes o distintos de los contemplados no habilitan reintentos. Al actualizar Nodemailer debe validarse de nuevo este contrato.
-
-Se mantienen los timeouts existentes: DNS, conexión y saludo de 5 s cada uno; socket inactivo de 10 s. Solo se admite iniciar el reintento dentro de los primeros **15 s**, medidos con reloj monotónico, incluyendo su espera. Esta ventana no cancela una operación SMTP ya iniciada ni es un timeout total de la solicitud. Los timeouts son de fase/inactividad; un servidor que progresa lentamente puede prolongar el tiempo total. No se introducen cancelaciones que conviertan una entrega aceptada en un reintento. La comprobación HTTP previa `assertAvailable()` sigue siendo una sola operación sin envío: si falla, retorna 503 antes de escribir identidad. Al solicitar cierre del adaptador no se inicia otro intento.
-
-Cada invocación construye una sola vez destinatario, código, fecha, cuerpo y un Message-ID UUID independiente de los secretos. Los conserva durante su eventual reintento; un reenvío explícito obtiene otro código y Message-ID. **Message-ID permite correlación, no deduplicación SMTP.** No se reintenta una aceptación ni un resultado incierto; no se ofrece garantía de exactamente una entrega. Un timeout tras el terminador DATA puede significar que el servidor aceptó el correo y se perdió el 250 final. Referencia: [RFC 5321, respuestas tras DATA y timeouts](https://www.rfc-editor.org/rfc/rfc5321.html#section-4.2.5).
-
-La aceptación SMTP solo indica que el servidor aceptó responsabilidad; no confirma entrega al buzón, ausencia de filtrado, ni lectura. `VerificationDeliveryError` sigue siendo genérico, sin respuesta SMTP original, credenciales ni código. El controlador conserva 202 `Solicitud recibida.` después de un fallo postcommit: confirma recepción de la solicitud, no envío exitoso; el evento de log permanece fijo. El adaptador solo resuelve exitosamente si el destinatario figura aceptado y no hay rechazos. Una cuenta no se verifica por enviar correo: necesita consumir su código mediante el caso de uso existente.
-
-Un fallo o corte de proceso no revierte identidad ni extiende la vigencia de cinco minutos. El token permanece vigente hasta expiración, consumo o revocación; puede haber sido recibido aunque el transporte haya fallado. Reenvío explícito sigue exigiendo 60 s y cuotas persistentes, revoca los códigos anteriores y no restablece los fallos acumulados. No se recrea estado ni se reenvía automáticamente al reiniciar el backend.
-
-### Recuperación durable: propuesta pendiente de aprobación
-
-La memoria del proceso contiene el código; MongoDB solo conserva su HMAC, que no permite reconstruirlo. Si Nest se detiene después del commit y antes del envío, se pierde la posibilidad de enviar ese mismo código automáticamente. Un corte después de la aceptación SMTP pero antes de registrar su resultado deja además una ventana de incertidumbre. La implementación actual ofrece reintentos dentro del proceso, **no entrega durable**.
-
-Si se requiere recuperar emisiones después de reinicios, se recomienda una outbox transaccional y un worker, en un incremento aprobado por separado. Propuesta de nueva colección `entregas_verificacion` (no creada): identificador de entrega, referencia a usuario/token y propósito, Message-ID estable, payload cifrado autenticado con clave independiente y versión de clave, expiración ligada al token, estado, intentos, próxima ejecución y lease con fencing para exclusión entre workers. Insertar el trabajo en la misma transacción que usuario/token; índices de unicidad por emisión/token y de planificación/lease, más política aprobada de retención. No almacenar contraseña ni código en claro, ni usar `tokens_cuenta` como cola.
-
-El worker comprobaría cuenta sin verificar y token vigente/no revocado/no usado antes de intentar enviar; una revocación concurrente aún podría producir un correo tardío, pero su código no sería válido. Trabajos vencidos o cancelados no deben renovar códigos ni cuotas. La outbox permite recuperar trabajos pendientes confirmados, pero no elimina la incertidumbre entre SMTP y MongoDB: un lease vencido tras un intento puede corresponder a una entrega aceptada. Ese estado necesita conciliación y una política explícita; Message-ID no hace segura su repetición automática. Requiere aprobar el modelo, cifrado/rotación, retención, operación del worker y tratamiento de duplicados antes de implementar. No se añadió colección, cola ni campo de entrega.
-
-### Pruebas y alcance del cierre
-
-`node scripts/mailpit.cjs test` ejecuta las pruebas específicas del adaptador, política, HTTP con MongoDB/Redis aislados y Mailpit. Incluye un receptor SMTP TLS de fallos exclusivamente local: rechazo 451 anterior a DATA seguido de aceptación, rechazo permanente 550 y recepción completa de DATA seguida de desconexión o de falta del 250 hasta agotar el timeout real del cliente. Estos receptores no realizan entregas externas. Las pruebas comprueban límites de intentos, Message-ID/código estables, ventana de reintento y cierre durante espera, consistencia usuario/token/cuotas, recuperación por reenvío y ausencia de secretos en logs/respuestas. Se mantienen las pruebas de aceptación real en Mailpit y credenciales incorrectas. Solo se usan direcciones `example.test` en estos escenarios.
-
-La regresión completa se ejecuta una vez al finalizar con `node scripts/mailpit.cjs suite` (invoca `npm test -- --detectOpenHandles`). Los helpers existentes conservan bases MongoDB UUID propias y namespaces Redis exclusivos con TTL. No se habilitan rutas públicas ni se modifican volúmenes o datos reales.
-
-Validación final del incremento 7 (2026-11-21): build y lint aprobados. Pruebas específicas: 51 aprobadas en 4 suites, 0 fallidas/omitidas (39,992 s). Única ejecución completa final: **183 pruebas aprobadas en 21 suites, 0 fallidas y 0 omitidas** (109,972 s), con `--detectOpenHandles` y sin advertencias de recursos abiertos. Limpieza comprobada: 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados; Compose confirmó eliminación de su red. Redis conserva solo claves aisladas con expiración por TTL. `git diff --check` pasó con advertencias LF/CRLF. No se modificaron configuración privada, datos reales, volúmenes ni activación pública; no se realizaron escrituras de Git.
-
-El cierre técnico del incremento se determina por build, lint y pruebas. El cierre operativo de Fase 3B requiere decidir y aceptar explícitamente la limitación de entrega no durable, o aprobar su resolución posterior, además de las precondiciones de despliegue ya documentadas. Para producción se mantienen transporte/remitente autorizados, SPF/DKIM/DMARC según el despliegue, custodia de claves/TLS, monitoreo de aceptación/rechazos y tratamiento de rebotes. No se declara recuperación tras reinicios ni entrega a buzón a partir de esta prueba local.
-
-## Incremento 6: correo de extremo a extremo con Mailpit
-
-Se reutilizan el controlador, los casos de uso, el adaptador SMTP y la fábrica del incremento 5. No se cambia la activación pública de HTTP ni la configuración privada. Mailpit captura mensajes localmente; no se configura relay, forwarding ni entrega a Internet. Las pruebas usan exclusivamente destinatarios `example.test`.
-
-Requisitos adicionales: OpenSSL accesible mediante `PATH` o `OPENSSL_BIN`, Docker Desktop disponible y las conexiones locales de MongoDB/Redis existentes. En Windows también se detecta `C:/msys64/ucrt64/bin/openssl.exe`. No se requiere instalar dependencias npm adicionales.
-
-```powershell
-# Mantener abierta esta sesión; Ctrl+C elimina únicamente este entorno Mailpit.
-node scripts/mailpit.cjs serve
-```
-
-El script comprueba los puertos 1025 (SMTP) y 8025 (web/API) antes del arranque. Si están ocupados, informa los puertos alternativos elegidos. La interfaz se abre por defecto en `http://127.0.0.1:8025`; la API está en `/api/v1/messages`. Usa siempre la URL que imprime el script. Cada ejecución utiliza un proyecto Compose `lethics-mailpit-<UUID>` independiente con [compose.mailpit.yaml](compose.mailpit.yaml), imagen oficial `axllent/mailpit:v1.27`, puertos publicados exclusivamente en loopback y sin volúmenes persistentes. La base de captura reside en tmpfs; solo los certificados temporales se montan en lectura. MongoDB y Redis no forman parte de este Compose.
-
-El adaptador existente exige autenticación y TLS validado. Mailpit se configura con STARTTLS obligatorio y credenciales ficticias `mailpit` / `mailpit-local-only`. El script genera un certificado de dos días con SAN para `localhost`/`127.0.0.1`. Para una aplicación local autorizada, establece en su sesión los valores impresos por `serve`: `VERIFICATION_MAIL_TRANSPORT=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=<puerto elegido>`, `SMTP_SECURE=false`, `SMTP_USER=mailpit`, `SMTP_PASSWORD=mailpit-local-only`, `SMTP_FROM=verificacion@example.test` y `NODE_EXTRA_CA_CERTS=<certificado impreso>`. Node debe iniciarse después de definir esta última variable. `SMTP_SECURE=false` exige STARTTLS; no permite SMTP sin cifrar. No uses `NODE_TLS_REJECT_UNAUTHORIZED=0`. Estos comandos no habilitan los endpoints de la aplicación habitual.
-
-### Ejecución y aislamiento de las pruebas
-
-```powershell
-# Adaptador SMTP y flujo HTTP real contra un Mailpit nuevo y efímero:
-node scripts/mailpit.cjs test
-
-# Build y lint; después, una sola ejecución de npm test con todas las integraciones:
-npm run build
-npm run lint
-node scripts/mailpit.cjs suite
-```
-
-Los modos `test` y `suite` crean Mailpit, esperan su API, ejecutan Jest con `--detectOpenHandles` y eliminan su contenedor, red y certificados al terminar, también ante fallos normales de prueba. Si se fuerza la terminación del proceso o Docker deja de responder, usa el nombre UUID impreso para revisar y retirar exclusivamente ese proyecto; nunca ejecutes limpieza global de Docker ni borres volúmenes.
-
-Se reutilizan `LETHICS_IDENTITY_TEST_URI` y `LETHICS_REDIS_TEST_URL` cuando están definidas. Si faltan, el script lee únicamente las conexiones locales de la configuración privada, sin mostrar valores ni sobrescribir archivos, y deriva una URI semilla MongoDB con base `admin`. El helper existente genera una base UUID antes de conectarse, rechaza la base `lethics` y limita la limpieza a sus objetos exactos de base y cliente. Redis usa un namespace UUID exclusivo; las claves de cuota expiran por TTL, sin `FLUSHDB`, `FLUSHALL` ni borrado de cuotas ajenas. Los índices y documentos sintéticos se preparan solo dentro de la base temporal. El script no imprime secretos de MongoDB/Redis.
-
-La nueva [prueba Mailpit](test/mailpit.integration.spec.ts) opta explícitamente por la fábrica SMTP real hacia loopback; el resto conserva el adaptador simulado de `NODE_ENV=test`. Sin las variables Mailpit suministradas por el script, esta prueba se omite deliberadamente. Para validar el incremento completo sin omisiones utiliza `suite`, no un `npm test` sin entorno de integración.
-
-La prueba registra un estudiante por HTTP, comprueba el destinatario, asunto y texto recibido mediante la API, extrae el código sin imprimirlo y prueba reenvío inmediato bloqueado, emisión posterior y revocación del código anterior. Solo adelanta la antigüedad de la emisión en su documento sintético, sin reiniciar cuotas. Verifica la cuenta en MongoDB y rechaza reutilización. Comprueba ausencia de contraseña, código, hash y claves en logs/respuestas, y rechazo real de autenticación SMTP incorrecta sin entregar mensajes. Los escenarios HTTP de fallo cerrado y fallo posterior al commit siguen cubiertos por las pruebas existentes. Una respuesta genérica 202 solo confirma recepción de la solicitud; no declara entrega. Una cuenta sin verificar conserva `verificadoEn=null`; este incremento no añade rutas de contenido protegido ni credenciales de acceso.
-
-El adaptador de desarrollo deshabilitado rechaza el envío; no simula éxito ni habilita registro/reenvío públicos. El adaptador de pruebas mantiene mensajes en memoria. SMTP realiza una conexión y entrega al servidor configurado: con Mailpit, el mensaje queda capturado localmente y no llega a un buzón externo.
-
-Validación del incremento 6 (2026-11-21): build y lint aprobados; pruebas específicas SMTP/Mailpit: 12 aprobadas en 2 suites (14,822 s). Una sola ejecución final de `npm test -- --detectOpenHandles`: 148 aprobadas en 20 suites, 0 fallidas y 0 omitidas (95,224 s), sin advertencias de recursos abiertos. Se comprobó que quedaron 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados temporales. Las claves Redis de pruebas conservan su expiración automática por TTL. No se modificaron datos reales, volúmenes MongoDB/Redis, configuración privada ni la activación pública de HTTP. `git diff --check` pasó con advertencias de conversión LF/CRLF.
-
-Para producción siguen pendientes el transporte autorizado, identidad de remitente, DNS/SPF/DKIM/DMARC según el despliegue, custodia de secretos y certificados, y la decisión sobre recuperación de entregas después del commit sin cola durable. La aceptación SMTP en Mailpit no demuestra entrega a destinatarios externos ni elimina esos requisitos. Referencias: [imagen oficial](https://mailpit.axllent.org/docs/install/docker/), [STARTTLS y autenticación](https://mailpit.axllent.org/docs/configuration/smtp-authentication/), [API](https://mailpit.axllent.org/docs/api-v1/).
-
-Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones están en [arquitectura](docs/arquitectura.md). Incluye identidad HTTP y login con activación controlada. Las secciones de incrementos anteriores conservan su contexto histórico; el estado de login está en Fase 3C y los contratos anteriores en Incremento 5.
-
-## Requisitos
-
-Node.js 22 LTS, npm y Docker con Compose. Desde la raíz, copia `.env.example` a `.env` y reemplaza los valores de usuario y contraseña por credenciales locales propias. Ajusta `MONGO_PORT` y el puerto correspondiente en `MONGODB_URI`; codifica para URI los caracteres especiales del usuario y contraseña. No compartas `.env`.
-
-La aplicación también requiere `JWT_ACCESS_SECRET_BASE64`, `JWT_ACCESS_ISSUER`, `JWT_ACCESS_AUDIENCE` y `JWT_ACCESS_TTL_SECONDS`. Genera una clave distinta de 32 bytes criptográficamente aleatorios por entorno; no uses la clave de otro proyecto. Por ejemplo, en PowerShell puedes asignarla a la sesión sin imprimirla:
-
-```powershell
-$bytesClave = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytesClave)
-$env:JWT_ACCESS_SECRET_BASE64 = [Convert]::ToBase64String($bytesClave)
-```
-
-Configura emisor, audiencia y duración en `.env`; el valor de 900 segundos del ejemplo es provisional. La clave debe suministrarse mediante un gestor de secretos o una variable local protegida, nunca compartirse o registrarse. La validación comprueba longitud, codificación y diversidad básica, pero no puede demostrar la entropía de la fuente. La configuración es obligatoria al iniciar aun cuando todavía no existan endpoints de autenticación.
+Desde la raíz del repositorio, instala las dependencias:
 
 ```sh
-docker compose up -d
-docker compose ps
 npm ci
-npm run start:dev
 ```
 
-MongoDB escucha solamente en `127.0.0.1`. El volumen nombrado conserva los datos entre reinicios. Las credenciales de inicialización solo se aplican a un volumen nuevo: cambiarlas en `.env` no modifica un usuario existente. La API inicia solo cuando puede conectarse a MongoDB. `GET http://localhost:3000/api/v1/health` responde con `api` y `mongodb`; devuelve 503 si se pierde la conexión después del arranque. Swagger está en `http://localhost:3000/docs`.
-
-Para comprobar la salud del contenedor usa `docker compose ps`. Para detenerlo sin borrar datos usa `docker compose down`. **No uses `docker compose down -v` salvo que quieras eliminar permanentemente el volumen y sus datos.** El respaldo y la restauración requieren herramientas compatibles `mongodump`/`mongorestore`, credenciales y una ubicación segura externa al repositorio; valida el procedimiento y restaura en un entorno aislado antes de confiar en un respaldo. Esta configuración standalone no admite transacciones multipdocumento.
-
-Un procedimiento local posible, con el servicio en ejecución, consiste en generar un archivo dentro del contenedor y copiarlo a una ubicación segura (sustituye las rutas y el ID por los de tu entorno):
-
-```sh
-docker compose exec mongodb sh -c 'mongodump --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --archive=/tmp/lethics.archive'
-docker compose ps -q mongodb
-docker cp <id-contenedor>:/tmp/lethics.archive <ruta-segura>/lethics.archive
-```
-
-Para restaurar, copia el archivo a `/tmp/lethics.archive` en un contenedor de prueba y ejecuta `docker compose exec mongodb sh -c 'mongorestore --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --archive=/tmp/lethics.archive'`. La restauración puede modificar datos existentes: comprueba primero su destino. Protege y elimina las copias temporales conforme a tu política de datos.
-
-```sh
-npm run build
-npm run lint
-npm test
-npm start
-```
-
-## Replica set aislado para desarrollo en Windows
-
-El `compose.yaml` anterior conserva el MongoDB standalone y su volumen original. El archivo `compose.replica.yaml` es una alternativa independiente: usa MongoDB 8.0, el replica set `lethics-rs`, el puerto local fijo 27018 y volúmenes nuevos `mongodb_rs_data` y `mongodb_rs_key`, separados por nombre de proyecto Compose. La clave interna se genera una sola vez en el volumen de clave mediante OpenSSL y no se guarda en el repositorio. Conserva **ambos** volúmenes. El nodo se anuncia como `localhost:27018`, accesible desde Windows y desde el inicializador que comparte su red. Esta configuración está diseñada para Nest en el host; no ofrece resolución para un Nest en otro contenedor.
-
-En PowerShell, con Docker Desktop iniciado y desde esta carpeta:
+Crea tu configuración local a partir de [.env.example](.env.example), sin sobrescribir un archivo existente. En PowerShell:
 
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-# Edita .env: cambia usuario y contraseña por valores locales propios.
-# Cambia MONGODB_URI al ejemplo del replica set y codifica caracteres especiales de las credenciales para URI.
-docker compose -f compose.replica.yaml config --quiet
-docker compose -f compose.replica.yaml up -d
-docker compose -f compose.replica.yaml ps -a
-docker compose -f compose.replica.yaml logs mongodb-rs-init
-npm ci
+```
+
+Completa los valores indicados en la sección de configuración antes de continuar. Después inicia MongoDB con replica set y Redis:
+
+```sh
+docker compose -f compose.replica.yaml -f compose.redis.yaml up -d
+docker compose -f compose.replica.yaml -f compose.redis.yaml ps -a
+```
+
+Espera a que los servicios estén saludables. El inicializador configura el replica set `lethics-rs`. Usa [compose.replica.yaml](compose.replica.yaml) para los flujos de identidad: la alternativa standalone de `compose.yaml` no admite sus transacciones.
+
+Inicia el servidor de desarrollo:
+
+```sh
 npm run start:dev
 ```
 
-El inicializador espera autenticación y crea el replica set solo si aún no existe. El healthcheck del contenedor exige un ping autenticado y que el nodo sea PRIMARY. Espera hasta ver `healthy`; `Invoke-RestMethod http://localhost:3000/api/v1/health` debe devolver `api: up` y `mongodb: up`. La API necesita una conexión inicial; si MongoDB cae después, health devuelve 503 con `api: up`, `mongodb: down` y el mensaje público `MongoDB no disponible`. Otros errores 5xx conservan un mensaje genérico. Swagger está en `/docs`.
+Con el puerto predeterminado, la API responde en `http://localhost:3000/api/v1` y Swagger está en `http://localhost:3000/docs`. La conexión inicial a MongoDB es obligatoria.
 
-La URI de ejemplo usa valores ficticios. Cambiar las variables de credenciales después de inicializar el volumen no cambia el usuario ya creado. Conserva la clave y los datos juntos; no reemplaces, reinicialices ni migres el volumen anterior. Para detener los servicios sin borrar datos: `docker compose -f compose.replica.yaml down`. Nunca uses `down -v` para detenerlos. El respaldo y la restauración siguen el procedimiento anterior, adaptando los comandos al archivo Compose y al servicio `mongodb-rs`; ensaya la restauración en un entorno aislado. El archivo temporal del respaldo contiene datos sensibles.
+Para ejecutar la versión compilada:
 
-La prueba manual histórica en dos ejecuciones está deshabilitada: no acredita propiedad de la base dentro de la misma ejecución que realiza la limpieza. El script termina antes de conectarse y explica la omisión. Usa las suites Jest aisladas para probar transacciones. No se ensaya persistencia tras reiniciar contenedores en este incremento. Un replica set de un nodo no proporciona alta disponibilidad ni sustituye un despliegue de producción.
-
-## Pruebas de persistencia de identidad
-
-`npm test` ejecuta las pruebas unitarias sin MongoDB y omite la integración si no está configurada. Para ejecutar la integración, inicia el replica set local de prueba y ejecuta en PowerShell:
-
-```powershell
-$env:LETHICS_IDENTITY_TEST_URI = 'mongodb://USUARIO:CLAVE@localhost:27018/admin?authSource=admin&replicaSet=lethics-rs'
-npm test -- --runTestsByPath test/identity.integration.spec.ts
-Remove-Item Env:LETHICS_IDENTITY_TEST_URI
+```sh
+npm run build
+npm start
 ```
 
-Sustituye las credenciales por las locales, codificadas para URI. La prueba acepta únicamente el servidor local en el puerto 27018, genera una base con UUID, verifica que no exista y la elimina al terminar solo si comprobó su propiedad y formato. Requiere permiso para listar bases, crear índices y eliminar esa base temporal. Los hashes usados son valores ficticios. Los índices de aplicación se declaran pero no se crean automáticamente al arrancar; su instalación controlada se describe en el incremento 4.
+En PowerShell, utiliza `npm.cmd` si la política de ejecución impide usar `npm.ps1`. Para detener los servicios sin eliminar sus datos:
 
-Para ejecutar toda la suite con integración, primero ejecuta `npm run build`, configura `LETHICS_IDENTITY_TEST_URI` como arriba y después `npm test`. Además de la prueba de identidad, se arranca el backend compilado con una clave JWT aleatoria temporal en un proceso aislado; se comprueban health, Swagger y fallos de configuración sin leer ni sobrescribir el `.env` del proyecto. Sin esa variable se omiten los casos que requieren MongoDB. Los procesos normales de desarrollo sí leen `.env`, y las variables del entorno del proceso tienen prioridad.
-
-Los esquemas exigen los datos mínimos de identidad y verifican la sintaxis del correo, pero no comprueban su propiedad ni la existencia de usuarios referenciados. La política de nulabilidad de los demás campos y la forma de perfil siguen pendientes. El procedimiento propuesto de instalación de índices y las limitaciones de serialización están en `docs/arquitectura.md`.
-
-## Registro y verificación: trabajo en preparación
-
-El registro público debe asignar `estudiante` en el servidor. Se acordó un código de verificación de seis cifras con vigencia de cinco minutos. Hay componentes HMAC, DTO y casos de uso internos transaccionales, pero **no hay rutas de registro, verificación ni reenvío habilitadas**. Faltan la integración HTTP segura de controles, la política de proxies, la instalación controlada de índices y la entrega fiable. Los DTO aún no forman un contrato HTTP publicado y no aparecen en Swagger. No hay proveedor de correo real; el buzón en memoria solo se registra en entorno de pruebas.
-
-Para `VERIFICATION_CODE_HMAC_KEY_BASE64`, genera de forma independiente 32 bytes aleatorios con el procedimiento indicado para JWT y consérvalos mediante una variable de entorno protegida; nunca reutilices la clave JWT ni la imprimas. Los controles por origen, el adaptador SMTP y la entrega fiable todavía requieren diseño y validación antes de publicar las rutas.
-
-### Incremento 1: límites internos
-
-Los casos de uso internos admiten cinco fallos por código, reenvío desde los 60 segundos y ventanas fijas de una hora por cuenta. Los valores provisionales `VERIFICATION_ACCOUNT_FAILURES_PER_HOUR` (20) y `VERIFICATION_ACCOUNT_EMISSIONS_PER_HOUR` (5, incluido registro) se validan en configuración. `VERIFICATION_CODE_HMAC_KEY_BASE64`, `RATE_LIMIT_HMAC_KEY_BASE64` y `JWT_ACCESS_SECRET_BASE64` deben ser tres claves distintas de 32 bytes aleatorios codificados en base64. También se exige `REDIS_URL` con contraseña. El inicio falla si faltan o son inválidos. No reemplaces `.env` existente.
-
-En PowerShell puedes configurar temporalmente las dos claves HMAC sin mostrarlas ni editar archivos:
-
-```powershell
-$claveVerificacion = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($claveVerificacion)
-$env:VERIFICATION_CODE_HMAC_KEY_BASE64 = [Convert]::ToBase64String($claveVerificacion)
-$claveLimite = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($claveLimite)
-$env:RATE_LIMIT_HMAC_KEY_BASE64 = [Convert]::ToBase64String($claveLimite)
+```sh
+docker compose -f compose.replica.yaml -f compose.redis.yaml down
 ```
 
-Estas variables duran solo en la sesión; para persistirlas utiliza un gestor de secretos o configura manualmente el `.env` privado. Mantén estables las claves entre reinicios: cambiarlas invalida códigos pendientes o reinicia la identidad de contadores de origen; aplica la cuarentena documentada. No copies las claves a archivos versionados ni a registros.
+Conserva los volúmenes de datos y la clave interna del replica set. Cambiar las credenciales de inicialización no cambia los usuarios de un volumen ya existente; no lo borres para resolver una diferencia de configuración.
 
-El formato HMAC v2 incluye usuario y token. Los códigos anteriores y cuentas sin el estado de seguridad no se aceptan ni reenvían automáticamente: precisan un procedimiento de migración controlado. Rotar la clave invalida los códigos pendientes. El envío de correo de prueba ocurre después del commit y no tiene recuperación durable; no habilites rutas públicas hasta resolver los límites por origen y la entrega. El reloj del proceso determina los límites de tiempo, por lo que las instancias deben mantenerlo sincronizado.
+## Configuración
 
-### Redis aislado para límites por origen
+[.env.example](.env.example) contiene las variables y valores de referencia. Sustituye sus marcadores por valores locales; `.env` está ignorado por Git.
 
-`compose.redis.yaml` ejecuta Redis 7.4 con contraseña, puerto local configurable (6380), AOF `appendfsync always`, `noeviction`, límite de memoria y volumen independiente; no modifica Compose ni volúmenes MongoDB. En `.env`, configura `REDIS_PASSWORD` y `REDIS_URL` con la misma clave local, `RATE_LIMIT_HMAC_KEY_BASE64` con 32 bytes aleatorios independientes de JWT y de verificación, y un `RATE_LIMIT_NAMESPACE` propio por entorno. Genera las claves con el procedimiento de PowerShell descrito arriba y no las imprimas. Los valores de `.env.example` son marcadores y no deben usarse como credenciales reales. Para producción se requiere `rediss://`, contraseña y un namespace diferente de `development`.
+- **MongoDB:** configura las credenciales y `MONGODB_URI`, incluyendo `authSource=admin` y `replicaSet=lethics-rs`.
+- **Redis:** establece `REDIS_PASSWORD` y la misma credencial en `REDIS_URL`. Codifica los caracteres especiales al construir ambas URI.
+- **Seguridad:** proporciona claves independientes de 32 bytes aleatorios en base64 para `JWT_ACCESS_SECRET_BASE64`, `VERIFICATION_CODE_HMAC_KEY_BASE64` y `RATE_LIMIT_HMAC_KEY_BASE64`.
+- **JWT:** configura issuer, audience y duración. El acceso tiene un máximo de 15 minutos; la duración inicial del refresh es de siete días.
+- **HTTP y correo:** `AUTH_HTTP_ENABLED=false` y `VERIFICATION_MAIL_TRANSPORT=disabled` bloquean por defecto las operaciones de autenticación pública. Registro, reenvío y solicitud de recuperación requieren SMTP configurado.
+- **Navegador:** define `AUTH_BROWSER_ORIGIN` para el origen autorizado; refresh y logout lo requieren. Las cookies son HttpOnly y SameSite Strict; en producción, Secure es obligatorio.
 
-```powershell
-docker compose -f compose.redis.yaml config --quiet
-docker compose -f compose.redis.yaml up -d
-docker compose -f compose.redis.yaml ps
-docker compose -f compose.redis.yaml down
+Para generar una clave, ejecuta este comando por separado para cada variable y guarda el resultado únicamente en tu configuración privada:
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 ```
 
-`down` conserva el volumen; no uses `down -v`. Las cuotas iniciales son 60 verificaciones en 600 segundos, 20 registros en 3600 segundos y 20 reenvíos en 3600 segundos, configurables mediante las variables `RATE_LIMIT_*`. Cada ventana comienza con la primera solicitud para una combinación de operación y origen; la primera que supera la cuota se rechaza y la clave caduca al terminar la ventana. Las claves contienen HMAC de IP, no direcciones en claro.
+Antes de habilitar autenticación, prepara explícitamente las colecciones `usuarios`, `tokens_cuenta` y `sesiones` en la base autorizada. No se crean automáticamente. Con la aplicación compilada, estas comprobaciones son de lectura:
 
-La conexión es perezosa: si Redis o la configuración falla, el servicio lanza `RateLimitUnavailableError`, sin usar memoria local. Verifica AOF, fsync, ausencia de expulsión y rol primario, y tras cada reinicio Redis bloquea durante la ventana configurada más larga, aunque haya recuperado el AOF. `appendfsync always` reduce pérdida de escrituras, pero no garantiza durabilidad ante daños del almacenamiento o acciones administrativas. Solo se admite una instancia Redis dedicada sin failover o sustitución transparente; ante restauración, reemplazo, cambio de claves, namespace o cuotas, bloquea las operaciones al menos durante la mayor ventana antigua/nueva antes de volver a habilitarlas.
-
-El servicio acepta exclusivamente la dirección del socket y un indicador explícito de proxy proporcionado por configuración confiable del servidor, nunca por el cliente. El modo detrás de proxy falla cerrado: no se procesan `X-Forwarded-For` ni se admiten proxies confiables todavía. Antes de habilitar endpoints se requiere implementar y probar la política de proxies, el uso obligatorio del limitador y el mapeo seguro a HTTP, además de entrega de correo e índices.
-
-`IdentityModule` registra los casos internos y exporta `IdentityOperationsService`, que verifica Redis antes de invocar cada uno. Es una frontera interna, no un controlador: futuras rutas deben usarla y no acceder directamente a los servicios. En `development` el correo simulado descarta mensajes sin registrarlos; en `test` el buzón en memoria se puede inspeccionar solo desde pruebas. No se realiza entrega externa. En `production` el inicio falla hasta que exista un proveedor aprobado. La cuarentena Redis puede bloquear las operaciones una hora incluso tras un reinicio limpio; no se ha reducido, pues aún no existe una prueba de continuidad lo suficientemente fuerte.
-
-Para ejecutar la integración aislada de Redis, configura `LETHICS_REDIS_TEST_URL` para Redis local en el puerto 6380 y ejecuta `npm test`; usa un entorno autorizado de prueba. La prueba crea exclusivamente claves con namespace y HMAC aleatorios y vencimiento, sin borrar ni cambiar cuotas existentes ni configuración del servidor. Sin la variable la integración Redis se omite.
-
-## Fase 3B — Incremento 4: operación previa a HTTP
-
-**Implementado:** herramientas de inspección y ensayo; no hay rutas públicas register, verify o resend. No se ha ejecutado instalación ni migración sobre datos reales. `autoCreate` y `autoIndex` siguen deshabilitados en los esquemas de identidad. La configuración válida no constituye autorización para publicar HTTP.
-
-### Comprobaciones de solo lectura
-
-Después de `npm run build`, desde la raíz:
-
-```powershell
+```sh
 npm run ops:config
 npm run ops:identity
 npm run ops:redis
 ```
 
-Las herramientas cargan el `.env` privado sin editarlo; las variables del proceso tienen prioridad. No imprimen secretos, URI, correos, hashes ni documentos. Los fallos inesperados se sanitizan. `ops:config` informa validez y nombres de campos inválidos, nunca sus valores. `ops:identity` devuelve opciones de índices y cantidades de datos incompatibles y devuelve código 1 si hay bloqueos; errores de lectura/permisos también bloquean. Usa el destino indicado por `MONGODB_URI`. No crea colecciones, índices ni marcadores, ni ejecuta `syncIndexes`. `ops:redis` solo usa INFO y CONFIG GET; diferencia estado incierto, cuarentena y disponibilidad operativa, sin incrementar contadores.
+Los índices únicos de correo y hash de token tampoco se instalan al arrancar. `npm run ops:install-identity-indexes` permite instalarlos con comprobación previa de datos y confirmación interactiva. Úsalo solo sobre un destino autorizado, con respaldo y escritores detenidos; no corrige datos heredados ni elimina índices incompatibles. Redis debe superar las comprobaciones de persistencia y continuidad; tras un reinicio puede mantenerse bloqueado hasta una hora.
 
-Diagnóstico observado el 2026-11-21: configuración local válida; Redis cumple las comprobaciones y terminó su cuarentena; en `lethics` faltan las colecciones `usuarios` y `tokens_cuenta`, por tanto sus índices. No se corrigió la base. Un conteo vacío sobre colecciones ausentes no prueba compatibilidad de un conjunto de datos heredado existente.
+Para consultar correo local sin destinatarios reales:
 
-### Índices obligatorios e instalación autorizada
+```sh
+node scripts/mailpit.cjs serve
+```
 
-| Colección | Clave | Nombre requerido | Opciones |
-|---|---|---|---|
-| usuarios | `{correo: 1}` | `correo_1` | unique, collation simple, sin sparse/partial/TTL |
-| tokens_cuenta | `{tokenHash: 1}` | `tokenHash_1` | unique, collation simple, sin sparse/partial/TTL |
+El comando imprime la URL de Mailpit y los valores SMTP de prueba que debes establecer en la sesión antes de iniciar Node.js, incluido `NODE_EXTRA_CA_CERTS`. La interfaz usa normalmente `http://127.0.0.1:8025`; si los puertos están ocupados, el script selecciona otros. Ctrl+C limpia su entorno temporal. El adaptador de desarrollo sin SMTP no envía correo ni simula una entrega satisfactoria.
 
-Se acepta la definición histórica sin collation explícita cuando `listIndexes` indica semántica simple. Una collation heredada no simple se rechaza. Un nombre distinto requiere revisión operativa explícita; no se renombra automáticamente. Un índice con hidden: true se informa como incompatible y bloquea el registro; la herramienta no lo modifica. `_id_` lo administra MongoDB. Verificación localiza el token por `_id`; reenvío y revocación consultan por usuario. Un índice adicional por usuario/tipo podría mejorar rendimiento, pero requiere mediciones y no es requisito de unicidad de este incremento. No se agrega TTL, índice de sesiones ni índices educativos.
+## API REST
 
-El registro comprueba ambas definiciones antes de calcular contraseña, abrir transacción o enviar correo. Si falta un índice, es incompatible o la lectura falla, no registra. Es una defensa de aplicación; la cuenta de servicio debe carecer de permisos de DDL y el equipo debe impedir cambios administrativos concurrentes de índices.
+Las rutas implementadas utilizan el prefijo `/api/v1`:
 
-Para una instalación futura, autorizada y con ambas colecciones aprobadas **ya existentes**:
+- `GET /health`: estado de la API y conexión a MongoDB.
+- `POST /auth/register`: registro con `nombre`, `correo` y `contraseña`; asigna el rol estudiante.
+- `POST /auth/verify`: verificación con `correo` y `codigo`.
+- `POST /auth/resend`: solicitud de otro código mediante `correo`.
+- `POST /auth/login`: inicio de sesión con `correo` y `contraseña`.
+- `POST /auth/refresh`: renovación mediante la cookie refresh y cuerpo JSON `{}`.
+- `POST /auth/logout`: cierre de sesión mediante la cookie y cuerpo JSON `{}`.
+- `GET /users/me`: perfil propio con `Authorization: Bearer <accessToken>`.
+- `POST /auth/password/forgot`: solicitud de recuperación mediante `correo`.
+- `POST /auth/password/reset`: restablecimiento con `token` y `nuevaContraseña`.
 
-1. Confirmar servidor/base por un canal protegido, permisos mínimos, autorización, respaldo y restauración ensayada. Detener todos los escritores durante inventario e instalación; mantener HTTP deshabilitado.
-2. Ejecutar `ops:identity`. Revisa índices existentes, campos ausentes/nulos/vacíos, sintaxis del correo, normalización trim/minúsculas y duplicados tras esa normalización. El análisis no devuelve valores. Usa memoria proporcional a los valores distintos; para grandes volúmenes ejecutar en una copia dimensionada y planificar una auditoría externa equivalente.
-3. Resolver datos inválidos/duplicados y colecciones ausentes mediante un cambio separado autorizado. Esta herramienta no crea colecciones ni modifica datos.
-4. Ejecutar `npm run ops:install-identity-indexes` desde una terminal interactiva. Revisa el informe y confirma escribiendo literalmente `INSTALL INDEXES <base>`. No admite confirmación por pipe ni una opción de aceptación automática. La confirmación declara autorización, escritores detenidos y respaldo comprobado.
-5. El instalador repite precondiciones, crea únicamente los dos índices y verifica el resultado. No elimina índices. Los dos comandos DDL no son una transacción: si falla el segundo puede quedar instalado el primero. Conservar bloqueo, inspeccionar y repetir únicamente después de resolver la causa. MongoDB rechaza duplicados concurrentes; las precondiciones requieren ventana de mantenimiento para evitar carreras de datos/configuración.
-6. Repetir `ops:identity` y registrar resultado sin datos personales. No habilitar HTTP solo por completar este paso.
+Swagger en `/docs` permite explorar los contratos y muestra las operaciones de autenticación habilitadas por configuración. Una ruta implementada puede responder 503 si está deshabilitada o falta una protección obligatoria. Las respuestas de registro y recuperación no confirman la existencia de cuentas ni la entrega del correo.
 
-Nunca ejecutar el instalador sobre desarrollo sin autorización adicional. Su instalación se ensaya exclusivamente en bases temporales; los índices incompatibles no se eliminan ni siquiera para reparar automáticamente un ensayo.
+El cliente debe conservar el access token en memoria y dejar que el navegador administre la cookie refresh; no guardar credenciales en localStorage. Las renovaciones deben coordinarse para evitar consumir simultáneamente el mismo refresh. Los JWT ya emitidos pueden seguir válidos hasta expirar después de logout o de un cambio de contraseña.
 
-### Usuarios y tokens heredados: migración conservadora
+CORS y la confianza en proxies permanecen deshabilitados. Configurar Origin no habilita peticiones entre distintos orígenes; la conexión del frontend debe ajustarse a una política de despliegue aprobada. La autorización de recursos propios requiere comprobar su pertenencia, además del rol.
 
-Los usuarios nuevos tienen `seguridadVerificacion` con `tokenActualId`, `ultimaEmision`, `emisionesInicio`, `emisiones`, `fallosInicio`, `fallos` y `revision`. Los tokens nuevos tienen `versionHmac: 2` e `intentosFallidos`. El estado válido requiere ObjectId, fechas válidas y contadores enteros no negativos. Los servicios rechazan estado parcial/inválido, además del estado ausente. El token requiere versión 2 y contador entero entre cero y cinco; cinco sigue bloqueando su consumo. No se completan campos silenciosamente.
+## Pruebas
 
-La función de ensayo `quarantineLegacyVerification` se limita por código a bases `lethics_ops_test_<UUID de 32 hex>` y confirmación exacta. En transacción revoca tokens de verificación activos con campos de seguridad incompatibles o usuario sin estado válido (incluye huérfanos). No toca recuperación, tokens ya usados/revocados, roles, `verificadoEn`, contadores de cuenta ni contadores de tokens. No genera códigos, no envía correo, no crea documentos ni colecciones. Repetir no cambia nuevamente los documentos. El inventario de solo lectura funciona también sobre el destino real.
+Las comprobaciones de código y las pruebas que no necesitan servicios externos se ejecutan con:
 
-Este ensayo es una migración de **cuarentena**, no de activación. Las cuentas no verificadas sin estado válido continúan bloqueadas; una cuenta con verificadoEn de tipo Date válido no se cuenta como bloqueada por carecer de ese estado; un reenvío no reconstruye su historial ni garantiza recuperación. Las cuentas con estado válido y token antiguo necesitan asimismo revisión; se conservan sus cuotas y se revoca el token inseguro, sin prometer que puedan reenviar automáticamente.
-
-Antes de cualquier migración real:
-
-1. Aprobar inventario y política de recuperación de identidad/restricciones; detener todas las operaciones de identidad, registrar hora UTC, versión del código y cuotas vigentes, sincronizar relojes y mantener la ventana de mantenimiento.
-2. Obtener respaldo consistente de `usuarios` y `tokens_cuenta`, cifrado y fuera del repositorio; verificar integridad y restaurar en una base aislada. Retener evidencia de IDs afectados y estado previo en almacenamiento protegido del operador, nunca logs públicos.
-3. Ensayar la cuarentena sobre copia y comparar documentos: solo debe cambiar `revocadoEn` de verificaciones inseguras activas. Verificar idempotencia, transacción y preservación de estados/restricciones. La suite incluida utiliza datos sintéticos.
-4. Proponer por separado el ejecutor autorizado para base real: hoy no existe comando de migración real y la función lo rechaza. Revisar volumen, lotes y duración transaccional antes de adaptarla a datos reales.
-5. Para recuperar una cuenta sin garantías, exigir revisión autorizada de identidad/restricciones y una política aprobada de inicialización conservadora y espera de la mayor ventana previa/nueva. No asignar contadores cero ni crear un token ficticio para eludir el bloqueo. HMAC anterior no puede convertirse a v2 sin el código; requiere un flujo de nueva emisión aprobado. No activar automáticamente cuentas verificadas ni restringidas.
-6. Ante error, la transacción revierte. Tras commit, no restaurar tokens revocados a vigentes: restablecer datos íntegros desde respaldo solo en entorno aislado y reconciliar bajo mantenimiento. La recuperación segura de acceso es una nueva emisión autorizada cuando exista dicho flujo, no un rollback que reviva códigos. Conservar respaldo y evidencia hasta cerrar la revisión.
-
-### Origen y proxies
-
-**Activo:** socket directo (`request.socket.remoteAddress`) y modo configurado por servidor. El futuro adaptador HTTP debe usar ese dato, nunca `request.ip` bajo confianza implícita ni un booleano tomado del cuerpo/cabeceras. Express conserva su configuración inicial sin confianza global en proxies. IPv4 decimal válida se conserva; IPv6 se canoniza/comprime en minúsculas; IPv4 mapeada, decimal o hexadecimal, se unifica con IPv4. Se rechazan zonas `%`, puertos, listas, valores vacíos y direcciones inválidas. Se limita por dirección exacta; la agregación por prefijo IPv6 requiere decisión posterior por sus efectos sobre usuarios/NAT.
-
-**Propuesto y deshabilitado:** antes de un proxy, documentar cada salto y ruta alternativa, CIDR/IP exactos del ingress, aislamiento de red del backend, familia de direcciones, cabecera única y reglas de sustitución. El borde debe eliminar cabeceras aportadas por clientes y emitir su propia cadena. Validar el socket contra una lista explícita; recorrer cadenas de derecha a izquierda retirando solo saltos confiables y detenerse en el primer no confiable. No elegir el primer valor arbitrariamente ni confiar solo por cantidad de saltos cuando existan rutas distintas. Rechazar cadenas ambiguas, longitud excesiva, duplicados conflictivos o discrepancias entre cabeceras; normalizar cada dirección antes de compararla. `Forwarded` necesita parser estricto de comillas/IPv6 si fuera la cabecera elegida. Probar múltiples proxies, bypass directo y saltos no confiables con la topología real. No hay lista ni extractor proxy habilitados; `behindProxy=true` falla cerrado. Las cabeceras `X-Forwarded-For`, `Forwarded` y `X-Real-IP` no participan en el origen directo.
-
-### Redis: continuidad y cuarentena
-
-Se exige Redis primario, AOF habilitado, `appendfsync always`, `noeviction`, escritura y última reescritura AOF sin error, carga terminada y uptime al menos igual a la mayor ventana configurada (por defecto 3600 segundos). Se comprueba el `run_id` antes/después de EVAL; cambios o errores se traducen a indisponibilidad genérica sin bypass. Una cuarentena rechazada no ejecuta EVAL. Un EVAL que falla o cuyo resultado queda incierto puede haber consumido cuota: se conserva el rechazo.
-
-Un reinicio limpio con AOF recuperado **no** permite saltar la espera. El diagnóstico informa segundos restantes únicamente cuando el estado es comprobable; un estado incierto no se convierte en espera supuestamente segura. El uptime no detecta restauraciones/borrados administrativos, reemplazos antiguos o cambios de clave, namespace y cuotas. Ante esos cambios se requiere bloqueo externo coordinado durante la mayor ventana antigua/nueva; no rotar claves ni reinicializar Redis para recuperar disponibilidad.
-
-Propuesta pendiente: identidad de despliegue/generación y evidencia durable externa al Redis restaurable, con control de exclusión de escritores, checkpoints confirmados, reloj/antirollback, configuración vinculada y validación por todas las instancias. Solo una prueba de continuidad que cubra fallos y restauraciones podría distinguir un reinicio seguro y justificar otra política. No se implementó ni aprobó esa excepción. INFO/CONFIG GET exigen permisos ACL de lectura; denegarlos produce fallo cerrado. Definir TLS, ACL restringida a claves/operaciones necesarias, monitoreo de AOF y política de recuperación antes de producción.
-
-### Configuración y bloqueos antes de HTTP
-
-Desarrollo y test requieren MongoDB replica set para transacciones, las tres claves independientes canónicas de 32 bytes en base64, issuer/audience/TTL, HMAC de códigos, cuotas válidas, Redis autenticado y namespace. Las cuotas actuales se conservan. La validación detecta formato/diversidad básica y reutilización, pero no certifica entropía ni custodia de claves. `.env` no se modifica.
-
-Producción exige adicionalmente Redis TLS (`rediss://`) y namespace explícito diferente de `development`; el arranque continúa bloqueado sin proveedor de correo aprobado. Antes de publicar también deben verificarse índices y datos reales, recuperación de heredados, entrega durable e idempotente sin nueva colección no autorizada, topología/red/TLS/ACL y política de origen, obligatoriedad de fachada con limitador, contratos y mapeo HTTP que no revele existencia de cuentas, reloj sincronizado y observabilidad sanitizada. No existe un flag que publique parcialmente endpoints: los controladores siguen ausentes.
-
-### Pruebas seguras
-
-```powershell
+```sh
 npm run build
 npm run lint
-npm test
-# Configurar las URI privadas sin mostrarlas; nunca copiar credenciales a documentación.
-# LETHICS_IDENTITY_TEST_URI: MongoDB local 27018, credenciales autorizadas de prueba.
-# LETHICS_REDIS_TEST_URL: Redis local 6380 de prueba autorizado.
 npm test -- --detectOpenHandles
 ```
 
-Sin las variables se omiten los casos de integración externa. MongoDB usa nombres aleatorios `lethics_identity_test_*` y `lethics_ops_test_*`, comprueba que no existan y solo elimina bases propias con formato verificado. Usa exclusivamente nombres de colecciones aprobados (`usuarios`, `tokens_cuenta`, `sesiones`); se retiró el marcador de colección adicional de la prueba previa. El ensayo de índices incompatibles deja ese índice intacto hasta eliminar la base temporal completa. Nunca se ejecuta la antigua prueba manual de reinicio de contenedores como parte de esta suite. Redis usa namespace/HMAC aleatorios y TTL; no ejecuta FLUSH, DEL de cuotas reales, CONFIG SET, reinicios ni cambios de volúmenes. El arranque compilado usa entorno test y se espera el cierre del subproceso para evitar recursos abiertos.
+Sin las variables de integración, Jest omite las suites que necesitan MongoDB, Redis o Mailpit. Esa ejecución no equivale a una validación completa.
 
-Resultado previo al refuerzo de aislamiento, verificado el 2026-11-21: `npm run build` y `npm run lint` aprobados. Suite `npm test -- --detectOpenHandles` con MongoDB y Redis configurados: **79 pruebas aprobadas, 0 fallidas, 0 omitidas; 13 suites aprobadas**, 92.83 segundos, sin advertencia de recursos abiertos. Incluye rollback de la primera revocación cuando falla la segunda y validación de claves independientes/producción. Sin variables externas, Jest omite las integraciones de infraestructura; las comprobaciones de solo lectura sobre la base real siguen informando los índices/colecciones ausentes.
+Con Docker, MongoDB y Redis disponibles, y OpenSSL configurado, utiliza el runner aislado existente:
 
-Protección adicional: [integration-isolation.ts](test/integration-isolation.ts) genera un UUID antes de conectar y rechaza URI MongoDB con base `lethics` (también codificada o en mayúsculas), destinos no locales/27018 y parámetros de sustitución de base. Configura una URI de prueba segura, por ejemplo con base `admin` y `authSource=admin`; no uses la URI de desarrollo terminada en `/lethics`. Cada suite, incluido el arranque compilado, recibe su URI temporal (`lethics_bootstrap_test_*` para arranque). El helper crea y administra su MongoClient temporal. La limpieza exige nombre UUID, ausencia inicial y la identidad exacta del cliente y del objeto Db creados por ese helper; no permite acreditar bases o conexiones externas mediante claim(); rechaza otra base/conexión y no adquiere permisos si falla la preparación. Una URI insegura omite la suite con motivo sanitizado antes de conectar. Redis genera un namespace `test_<aleatorio>` de hasta 32 caracteres sin aceptar overrides; las claves expiran solas, sin borrados. Nunca se ejecutan FLUSHDB ni FLUSHALL. La prueba manual antigua está bloqueada porque su limpieza entre ejecuciones no acredita propiedad.
+```sh
+# SMTP y flujos HTTP asociados
+node scripts/mailpit.cjs test
 
-Archivos adicionales de protección de pruebas: [integration-isolation.ts](test/integration-isolation.ts), [integration-isolation.spec.ts](test/integration-isolation.spec.ts) y [replica.integration.cjs](test/replica.integration.cjs) (deshabilitado).
-
-Correcciones finales del incremento 4:
-
-- `inspectLegacySecurity().blockedUsers` cuenta exclusivamente cuentas no verificadas sin estado de verificación válido. Una fecha BSON/JavaScript Date válida en `verificadoEn` excluye la cuenta de ese conteo, incluso si el estado falta o es parcial. Un string o fecha inválida no acredita verificación. El inventario no modifica documentos ni concede acceso; el análisis de tokens inseguros y la cuarentena conservan sus reglas.
-- `compatibleIdentityIndex` rechaza `hidden: true` como incompatibilidad operativa, sin eliminar, revelar ni modificar el índice. Su remediación requiere un cambio autorizado separado.
-- El helper temporal crea su propio `MongoClient` mediante `open()` y devuelve el cliente/base vinculados. No admite conexiones externas mediante `claim`. Mongoose utiliza ese mismo cliente gestionado; cada ensayo adicional obtiene un scope y cliente nuevos. `cleanup(db, client)` exige identidad exacta de ambos y el nombre UUID; otra conexión al mismo nombre también se rechaza. `close()` limpia únicamente la base propia y cierra el cliente en finally; conexión fallida, colisión o inventario no confirmado no conceden propiedad. No se borra ninguna base si la preparación falla.
-- `mongodb` es dependencia directa fijada exactamente a **6.20.0** en manifiesto y lockfile. Es la misma versión instalada y compartida con Mongoose; no se actualizaron otras dependencias.
-
-Archivos de estas correcciones: [legacy-security.ts](src/modules/identity/infrastructure/legacy-security.ts), [identity-indexes.ts](src/modules/identity/infrastructure/identity-indexes.ts), [integration-isolation.ts](test/integration-isolation.ts), [integration-isolation.spec.ts](test/integration-isolation.spec.ts), [legacy-security.spec.ts](test/legacy-security.spec.ts) (nuevo), [identity-operations-safety.spec.ts](test/identity-operations-safety.spec.ts), [identity-ops.integration.spec.ts](test/identity-ops.integration.spec.ts), [identity.integration.spec.ts](test/identity.integration.spec.ts), [bootstrap.integration.spec.ts](test/bootstrap.integration.spec.ts), [package.json](package.json), [package-lock.json](package-lock.json), este README y [arquitectura.md](docs/arquitectura.md) (ignorado por Git).
-
-Validación de las correcciones finales: `npm run build` y `npm run lint` aprobados; `npm test -- --detectOpenHandles` con MongoDB/Redis aislados: **104 pruebas aprobadas, cero fallidas/omitidas, 15 suites**, 108.103 segundos, sin advertencias de recursos abiertos. `npm ls mongodb mongoose --all` confirma mongodb 6.20.0 directo y compartido con Mongoose, sin actualizaciones adicionales. Los resultados anteriores de 79/89 pruebas describen ejecuciones previas a estas correcciones.
-
-Verificación después del refuerzo: build y lint aprobados; `npm test -- --detectOpenHandles` con URI inicial de prueba `/admin` y destinos UUID generados por cada suite: **89 pruebas aprobadas, cero fallidas/omitidas; 14 suites aprobadas**, 96.809 segundos, sin advertencia de recursos abiertos. Las 10 pruebas nuevas de aislamiento no necesitan conexión externa. El ensayo manual de reinicio/limpieza entre procesos se omite deliberadamente porque no satisface propiedad dentro de la misma ejecución.
-
-Archivos de este incremento:
-
-| Estado | Archivos |
-|---|---|
-| Creados: operación | [identity-indexes.ts](src/modules/identity/infrastructure/identity-indexes.ts), [legacy-security.ts](src/modules/identity/infrastructure/legacy-security.ts), [redis-readiness.ts](src/infrastructure/rate-limit/redis-readiness.ts), [identity-ops.cli.ts](src/operations/identity-ops.cli.ts) |
-| Creados: pruebas | [identity-operations-safety.spec.ts](test/identity-operations-safety.spec.ts), [identity-ops.integration.spec.ts](test/identity-ops.integration.spec.ts), [redis-fail-closed.spec.ts](test/redis-fail-closed.spec.ts), [redis-readiness.spec.ts](test/redis-readiness.spec.ts) |
-| Modificados: aplicación | [registration.service.ts](src/modules/identity/application/registration.service.ts), [verify-email.service.ts](src/modules/identity/application/verify-email.service.ts), [resend-verification.service.ts](src/modules/identity/application/resend-verification.service.ts), [identity.schemas.ts](src/modules/identity/infrastructure/schemas/identity.schemas.ts), [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts) |
-| Modificados: pruebas | [bootstrap.integration.spec.ts](test/bootstrap.integration.spec.ts), [identity.integration.spec.ts](test/identity.integration.spec.ts), [origin-rate-limit.spec.ts](test/origin-rate-limit.spec.ts), [redis.integration.spec.ts](test/redis.integration.spec.ts) |
-| Modificados: operación/documentación | [package.json](package.json), [README.md](README.md), [arquitectura.md](docs/arquitectura.md) (local, ignorado por Git) |
-
-## Incremento 5: endpoints HTTP de identidad
-
-**Implementado:** `AuthHttpModule` incorpora los contratos siguientes reutilizando `IdentityOperationsService`, registro/verificación/reenvío transaccionales y el limitador Redis. **Estado local verificado:** no existe activación explícita de HTTP ni selección/configuración SMTP; las tres rutas permanecen bloqueadas con 503 y ausentes de Swagger. No se editó `.env`, no se enviaron mensajes externos y no se prepararon índices en desarrollo.
-
-| Ruta POST | Entrada | Resultado con operación habilitada y disponible |
-|---|---|---|
-| `/api/v1/auth/register` | `nombre`, `correo`, `contraseña` | 202 `{"message":"Solicitud recibida."}` |
-| `/api/v1/auth/verify` | `correo`, `codigo` (string de seis dígitos) | 200 `{"message":"Correo verificado."}`; 400 si no puede verificarse |
-| `/api/v1/auth/resend` | `correo` | 202 `{"message":"Solicitud recibida."}` |
-
-Los DTO son independientes. Normalizan correo con trim/minúsculas; nombre se recorta y exige contenido. Se rechazan propiedades extra, incluido `rol`, en las tres rutas. El rol se asigna exclusivamente como `estudiante` en el servicio existente. Como límites de tamaño de entrada se admiten hasta 200 caracteres de nombre, 254 de correo y 1024 de contraseña; la contraseña no se recorta ni normaliza. No se introduce una nueva política de longitud mínima más allá de la entrada no vacía existente. No se devuelven usuarios, hashes, códigos, JWT ni sesiones.
-
-Registro y reenvío retornan el mismo 202 sin confirmar existencia, estado de cuenta, límites por cuenta ni entrega. Un duplicado concurrente de correo conserva esa respuesta. Correo inexistente/verificado, reenvío antes de 60 segundos y restricciones de cuenta no revelan su condición. Una incompatibilidad heredada conocida mantiene el bloqueo y la respuesta neutra de reenvío. La verificación utiliza el mismo 400 público para código incorrecto, vencido, consumido, revocado o restringido; errores de forma del DTO también son 400. Estos contratos evitan enumeración explícita por contenido/estado normal de respuesta; no garantizan tiempos de respuesta constantes, pues la escritura y el envío síncrono tienen costos diferentes.
-
-### Protección y activación
-
-El guard comprueba configuración, toma exclusivamente `request.socket.remoteAddress` y obtiene una autorización interna de la fachada tras consumir Redis. La autorización está vinculada a operación/origen/modo y se consume una sola vez; se guarda con un símbolo del servidor y nunca se acepta ni serializa desde el cliente. Así, los DTO inválidos también consumen cuota de origen y el caso de uso no la descuenta dos veces. Si Redis falla, no se consultan índices ni cuentas. No hay bypass en memoria.
-
-Después de Redis se comprueban en lectura los dos índices obligatorios antes de permitir operaciones sobre correos y tokens; registro conserva además su comprobación interna para los demás consumidores. Se rechazan ausencias, índices ocultos o incompatibilidades; no se instalan ni alteran índices. Se preservan transacciones, HMAC v2, propósito, expiración por reloj de servidor, consumo único, cinco fallos, 60 segundos, revocación previa y ventanas/cuotas persistentes. Reenviar no borra fallos de cuenta ni del token anterior; el nuevo token mantiene su contador propio, según el contrato existente.
-
-| Configuración | Comportamiento |
-|---|---|
-| `AUTH_HTTP_ENABLED=false` o ausente | Las tres rutas responden 503 y no aparecen en Swagger |
-| `AUTH_BEHIND_PROXY=true` | Las tres rutas bloqueadas; la política de proxies sigue sin implementarse |
-| HTTP activado, sin adaptador SMTP real | Registro/reenvío bloqueados; verify puede operar con índices, MongoDB y Redis válidos |
-| HTTP activado y SMTP configurado | Registro/reenvío comprueban además conexión/TLS/autenticación SMTP antes de escribir |
-| Redis, índices, MongoDB o comprobación SMTP indisponibles | 503 sanitizado mediante el filtro existente |
-| Cuota por origen excedida | 429 `Límite de solicitudes alcanzado`, antes de consultar cuentas |
-
-`AUTH_BEHIND_PROXY=false` solo corresponde a un despliegue directo cuya topología se haya comprobado. El cliente no controla ese indicador. No se procesan `X-Forwarded-For`, `Forwarded`, `X-Real-IP` ni `request.ip`; la normalización IPv4/IPv6 y el comportamiento fail closed siguen en el limitador existente. No se activa confianza global en proxies.
-
-Swagger publica únicamente rutas activadas por configuración y capacidad real del adaptador; un fallo posterior de infraestructura se informa con el 503 documentado. La documentación se construye al iniciar: los cambios operativos de configuración requieren reinicio del proceso. Verify no necesita SMTP para consumir un código existente, pero conserva todas las demás defensas. El 200 de verify no inicia sesión ni habilita acceso mediante credenciales; no se añadieron rutas educativas, login, refresh, logout, recuperación ni administración. Cualquier acceso futuro a contenido protegido deberá comprobar la verificación con autenticación/autorización propias.
-
-### SMTP independiente del proveedor
-
-Se agrega Nodemailer **10.6.1**, con tipos propios, sin cambiar las demás versiones. No se selecciona servicio comercial. Variables nuevas (solo marcadores comentados en `.env.example`):
-
-- `VERIFICATION_MAIL_TRANSPORT=disabled` por defecto; seleccionar `smtp` únicamente para un servidor autorizado.
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` obligatorias al seleccionar SMTP.
-- `SMTP_SECURE=true` por defecto para TLS implícito (habitualmente 465). Para STARTTLS (habitualmente 587), usar false: el adaptador exige la actualización TLS, nunca continúa en claro. Los certificados se validan y se requiere TLS 1.2 o superior.
-
-El adaptador limita tiempos de conexión/saludo/socket/DNS; desactiva logs de protocolo, debug, pool y acceso a archivos/URLs. Emisor/destinatario y código se validan; el mensaje es texto fijo con código y vigencia, sin contenido HTML del cliente. Comprueba aceptación del destinatario por SMTP; esto no certifica entrega final a la bandeja. La comprobación previa verifica conexión, TLS y autenticación sin enviar un correo. Véase la [documentación oficial de SMTP de Nodemailer](https://nodemailer.com/smtp).
-
-En `NODE_ENV=test`, la fábrica siempre devuelve el buzón de pruebas y nunca construye una conexión SMTP real, aunque existan variables SMTP heredadas. Ese buzón no habilita registro/reenvío públicos. Los ensayos HTTP que necesitan esas rutas sustituyen explícitamente el transporte por un mock dentro del adaptador SMTP; todos los mensajes observados en esas pruebas son simulados. En desarrollo sin SMTP el adaptador deshabilitado ahora rechaza el envío, en lugar de descartarlo como si hubiera tenido éxito. Producción sin SMTP conserva el bloqueo de inicio existente.
-
-Si falla el SMTP antes de la transacción, la operación responde 503 y no escribe. Si falla después del commit, usuario/token permanecen guardados y sin verificar: se registra únicamente el evento fijo `Entrega de verificación no confirmada`, sin destinatario, código, credenciales ni excepción original. La respuesta sigue siendo 202 `Solicitud recibida.` para evitar enumeración; nunca afirma entrega. No hay cola durable, reintento automático ni nueva colección. La recuperación disponible es solicitar otro código después de 60 segundos, respetando cuotas; no se garantiza recuperación para cuentas heredadas incompatibles.
-
-### Validación y límites de este incremento
-
-Build y lint aprobados. Ejecución focalizada con `--detectOpenHandles`: **52 pruebas aprobadas, 0 fallidas, 0 omitidas, 7 suites**, 27.811 segundos. Se ejecutaron los cuatro archivos nuevos y las regresiones pertinentes de fachada, DTO/configuración HTTP; no se repitió toda la suite histórica. Incluye HTTP con servicios reales y MongoDB/Redis aislados: registro concurrente, rol fijo, consumo único, cinco fallos, 60 segundos, revocación y preservación de cuotas, y fallo SMTP posterior al commit. El transporte SMTP estuvo simulado, sin red ni correos externos. Sin variables seguras de integración se omiten los cuatro casos del archivo HTTP integrado; no se sustituyen por pruebas sobre `lethics`. La limpieza solo afecta el UUID propio y Redis usa namespace exclusivo con TTL, sin FLUSH ni borrado de cuotas reales. No se observaron recursos abiertos.
-
-Para repetir únicamente esta validación con las variables de prueba seguras ya configuradas:
-
-```powershell
-npm run build
-npm run lint
-npm test -- --runTestsByPath test/auth-http.spec.ts test/smtp-verification.spec.ts test/identity-http-permits.spec.ts test/auth-http.integration.spec.ts test/identity-operations.spec.ts test/verification-foundation.spec.ts test/foundation.spec.ts --detectOpenHandles
+# Suite completa, incluidas las integraciones
+node scripts/mailpit.cjs suite
 ```
 
-Pendiente antes de una activación real: SMTP/identidad del remitente autorizados y custodia de secretos, prueba controlada de entrega real fuera de las pruebas automáticas, preparación autorizada de índices y revisión de datos/heredados, aceptación o resolución del riesgo de entrega sin cola durable, topología directa segura/TLS/ACL y sincronización de relojes. No se tomaron estas decisiones ni se modificó infraestructura. La activación requiere que el operador configure explícitamente HTTP; no se realizó en este incremento.
+El runner toma las conexiones locales de `.env` o de `LETHICS_IDENTITY_TEST_URI` y `LETHICS_REDIS_TEST_URL`. Si defines la URI semilla de pruebas MongoDB, apunta a `admin`, no a `lethics`; los helpers crean bases UUID propias en `localhost:27018`. Redis utiliza namespaces exclusivos en el puerto local 6380. Se requieren permisos para listar bases y para crear, inspeccionar y eliminar las bases temporales y sus índices.
 
-### Archivos del incremento 5
+Mailpit se crea en un proyecto Docker independiente y se elimina al terminar, junto con su red y certificados. Las pruebas no envían correo real ni limpian bases de aplicación o cuotas compartidas. Revisa siempre las omisiones y la limpieza informadas por la ejecución.
 
-| Estado | Archivos |
-|---|---|
-| Creados: HTTP | [auth-http.module.ts](src/modules/auth/auth-http.module.ts), [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [resend-verification.dto.ts](src/modules/identity/presentation/dto/resend-verification.dto.ts) |
-| Creados: correo | [smtp-verification-mailer.ts](src/modules/identity/infrastructure/smtp-verification-mailer.ts), [verification-mailer.factory.ts](src/modules/identity/infrastructure/verification-mailer.factory.ts) |
-| Creados: pruebas | [auth-http.spec.ts](test/auth-http.spec.ts), [auth-http.integration.spec.ts](test/auth-http.integration.spec.ts), [smtp-verification.spec.ts](test/smtp-verification.spec.ts), [identity-http-permits.spec.ts](test/identity-http-permits.spec.ts) |
-| Modificados: identidad | [identity.module.ts](src/modules/identity/identity.module.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [registration.service.ts](src/modules/identity/application/registration.service.ts), [resend-verification.service.ts](src/modules/identity/application/resend-verification.service.ts), [verify-email.service.ts](src/modules/identity/application/verify-email.service.ts) (comentario), [verification-mailer.ts](src/modules/identity/application/verification-mailer.ts), [development-verification-mailer.ts](src/modules/identity/infrastructure/development-verification-mailer.ts), [register.dto.ts](src/modules/identity/presentation/dto/register.dto.ts), [verify-email.dto.ts](src/modules/identity/presentation/dto/verify-email.dto.ts) |
-| Modificados: arranque/configuración | [app.module.ts](src/app.module.ts), [configure-app.ts](src/configure-app.ts), [environment.ts](src/config/environment.ts), [.env.example](.env.example), [package.json](package.json), [package-lock.json](package-lock.json), este README y [arquitectura.md](docs/arquitectura.md) (local, ignorado por Git) |
+## Estado del proyecto
+
+La base de identidad y seguridad está implementada y dispone de pruebas unitarias y de integración. Los módulos de contenido, evaluaciones, actividades y progreso continúan previstos para su desarrollo.
+
+La preparación para producción requiere definir el despliegue del frontend, SMTP, Origin/CORS, proxies, retención de sesiones y recuperación durable de los envíos de correo. Las pruebas locales no sustituyen estas decisiones. Los permisos administrativos todavía no están aprobados.
+
+## Equipo y colaboración
+
+Lethics se desarrolla de forma colaborativa, con responsabilidades distribuidas entre backend, frontend y funcionalidades educativas. El trabajo se organiza en ramas `feature` y se revisa mediante pull requests hacia `dev`.
+
+Cada cambio debe mantener los contratos compartidos, incluir las comprobaciones pertinentes y respetar los módulos desarrollados por otras personas del equipo.
