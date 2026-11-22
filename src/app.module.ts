@@ -8,6 +8,7 @@ import { RateLimitModule } from './infrastructure/rate-limit/rate-limit.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { AuthHttpModule } from './modules/auth/auth-http.module';
 import { UsersModule } from './modules/users/users.module';
+import { AssessmentsModule } from './modules/assessments/assessments.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { UsersModule } from './modules/users/users.module';
     IdentityModule,
     AuthHttpModule,
     UsersModule,
+    AssessmentsModule,
   ],
 })
 export class AppModule {}
