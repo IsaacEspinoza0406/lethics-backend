@@ -9,6 +9,7 @@ import { IdentityModule } from './modules/identity/identity.module';
 import { AuthHttpModule } from './modules/auth/auth-http.module';
 import { UsersModule } from './modules/users/users.module';
 import { AssessmentsModule } from './modules/assessments/assessments.module';
+import { LearningModule } from './modules/learning/learning.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AssessmentsModule } from './modules/assessments/assessments.module';
     AuthHttpModule,
     UsersModule,
     AssessmentsModule,
+    LearningModule,
   ],
 })
 export class AppModule {}
