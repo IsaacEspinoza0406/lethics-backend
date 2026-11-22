@@ -7,9 +7,26 @@ export interface AssessmentContext {
   moduloId: string;
   version: number;
 }
+export type FinalExamContext = Omit<AssessmentContext, 'moduloId'> & { moduloId: null };
+/** The adapter supplies authoritative course-module IDs and registered valid submission evidence.
+ * Missing/unavailable dependencies must throw, never fabricate a positive result. */
+export interface FinalExamEligibility {
+  cursoId: string;
+  modulosCompletados: readonly string[];
+  proyectoEntregado: boolean;
+}
 /** The owning course/progress modules must verify references and student availability. */
 export abstract class AssessmentContextPort {
   abstract isAvailable(context: Readonly<AssessmentContext>): Promise<boolean>;
+  // Concrete default preserves existing quiz adapters while keeping finals fail closed.
+  async finalExamEligibility(context: Readonly<FinalExamContext>): Promise<FinalExamEligibility> {
+    void context;
+    throw new ServiceUnavailableException('Integración de progreso y entregas pendiente.');
+  }
+}
+/** Trusted backend consumer; this is not an HTTP endpoint or a progress mutation. */
+export abstract class AssessmentResultsPort {
+  abstract hasPassedFinalExam(usuarioId: string, cursoId: string): Promise<boolean>;
 }
 @Injectable()
 export class UnintegratedAssessmentContext extends AssessmentContextPort {

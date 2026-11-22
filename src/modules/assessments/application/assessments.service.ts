@@ -1,14 +1,15 @@
-import { BadRequestException, ConflictException, HttpException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Connection, Model, Types } from 'mongoose';
 import { Answer, Attempt, Evaluation, InvalidAnswersError, gradeAnswers, normalizeAnswers, validEvaluation } from '../domain/assessment';
 import { calculateGrade } from '../domain/grading';
 import { AssessmentContextPort } from './assessment-context';
 import { hasAttemptUniqueness } from '../infrastructure/assessment-indexes';
+import { FINAL_EXAM_ATTEMPTS, finalAttemptId } from '../domain/final-exam';
 
 interface SubmitInput { version: number; solicitudId: string; respuestas: Answer[] }
 interface Page { pagina: number; limite: number }
-interface HistoryQuery extends Page { evaluacionId?: string; moduloId?: string; orden: 'fecha_desc' | 'fecha_asc' | 'porcentaje_desc' | 'porcentaje_asc' }
+interface HistoryQuery extends Page { evaluacionId?: string; moduloId?: string; cursoId?: string; orden: 'fecha_desc' | 'fecha_asc' | 'porcentaje_desc' | 'porcentaje_asc' }
 
 type StoredEvaluation = Evaluation & { _id: Types.ObjectId };
 type StoredAttempt = Attempt & { _id: Types.ObjectId };
@@ -38,18 +39,24 @@ export class AssessmentsService {
   }
   private async available(user: string, evaluation: StoredEvaluation): Promise<boolean> {
     if (!validEvaluation(evaluation)) throw new Error('Contenido incompatible');
-    return this.context.isAvailable(Object.freeze({ usuarioId: user, evaluacionId: evaluation._id.toHexString(), cursoId: evaluation.cursoId.toHexString(), moduloId: evaluation.moduloId!.toHexString(), version: evaluation.version }));
+    const descriptor = { usuarioId: user, evaluacionId: evaluation._id.toHexString(), cursoId: evaluation.cursoId.toHexString(), version: evaluation.version };
+    if (evaluation.tipo === 'cuestionario') return this.context.isAvailable(Object.freeze({ ...descriptor, moduloId: evaluation.moduloId!.toHexString() }));
+    const eligibility = await this.context.finalExamEligibility(Object.freeze({ ...descriptor, moduloId: null }));
+    if (!eligibility || typeof eligibility.proyectoEntregado !== 'boolean' || !Array.isArray(eligibility.modulosCompletados) ||
+      eligibility.modulosCompletados.length > 5 || !eligibility.modulosCompletados.every((id) => typeof id === 'string' && /^[a-f\d]{24}$/i.test(id)) ||
+      new Set(eligibility.modulosCompletados.map((id) => id.toLowerCase())).size !== eligibility.modulosCompletados.length || typeof eligibility.cursoId !== 'string') throw new Error('Elegibilidad incompatible');
+    return eligibility.cursoId === descriptor.cursoId && eligibility.modulosCompletados.length === 5 && eligibility.proyectoEntregado;
   }
   private evaluationView(e: StoredEvaluation) {
-    return { id: e._id.toHexString(), cursoId: e.cursoId.toHexString(), moduloId: e.moduloId!.toHexString(), tipo: e.tipo, version: e.version, minimoAprobatorio: e.minimoAprobatorio,
+    return { id: e._id.toHexString(), cursoId: e.cursoId.toHexString(), moduloId: e.moduloId?.toHexString() ?? null, tipo: e.tipo, version: e.version, minimoAprobatorio: e.minimoAprobatorio,
       preguntas: e.preguntas.map((q) => ({ id: q.id, texto: q.texto, opciones: q.opciones.map((o) => ({ id: o.id, texto: o.texto })) })) };
   }
   private attemptView(a: StoredAttempt) {
     const grade = calculateGrade(a.aciertos, a.total), answers = normalizeAnswers(a.respuestas);
-    if (!(a._id instanceof Types.ObjectId) || !(a.evaluacionId instanceof Types.ObjectId) || !(a.cursoId instanceof Types.ObjectId) || !(a.moduloId instanceof Types.ObjectId) ||
+    if (!(a._id instanceof Types.ObjectId) || !(a.evaluacionId instanceof Types.ObjectId) || !(a.cursoId instanceof Types.ObjectId) || (a.moduloId !== null && !(a.moduloId instanceof Types.ObjectId)) ||
       !Number.isSafeInteger(a.version) || a.version < 1 || typeof a.solicitudId !== 'string' || !a.solicitudId.trim() || answers.length !== a.total ||
       Number(a.porcentaje) !== grade.porcentaje || a.aprobado !== grade.aprobado || !(a.fecha instanceof Date) || !Number.isFinite(a.fecha.getTime())) throw new Error('Historial incompatible');
-    return { id: a._id.toHexString(), evaluacionId: a.evaluacionId.toHexString(), cursoId: a.cursoId.toHexString(), moduloId: a.moduloId.toHexString(), version: a.version,
+    return { id: a._id.toHexString(), evaluacionId: a.evaluacionId.toHexString(), cursoId: a.cursoId.toHexString(), moduloId: a.moduloId?.toHexString() ?? null, version: a.version,
       solicitudId: a.solicitudId, respuestas: answers, ...grade, fecha: a.fecha.toISOString() };
   }
   private replay(record: StoredAttempt, evaluation: Types.ObjectId, input: SubmitInput) {
@@ -58,52 +65,80 @@ export class AssessmentsService {
     }
     return this.attemptView(record);
   }
-  private async load(evaluation: Types.ObjectId, user: string, session?: ClientSession): Promise<StoredEvaluation> {
-    const query = this.evaluations.findOne({ _id: evaluation, tipo: 'cuestionario', estado: 'publicado' }).select('+preguntas.opcionCorrectaId');
+  private async finalCount(usuarioId: Types.ObjectId, cursoId: Types.ObjectId, session?: ClientSession): Promise<number> {
+    // Approved invariant: quiz attempts have a module; final attempts have module=null.
+    // Includes legacy/random IDs and all evaluation versions, conservatively including absent module.
+    const query = this.attempts.countDocuments({ usuarioId, cursoId, moduloId: null });
+    if (session) query.session(session);
+    return query.exec();
+  }
+  private async load(evaluation: Types.ObjectId, user: string, session?: ClientSession, cursoId?: string): Promise<StoredEvaluation> {
+    const query = this.evaluations.findOne({ _id: evaluation, estado: 'publicado' }).select('+preguntas.opcionCorrectaId');
     if (session) query.session(session);
     const record = await query.lean();
-    if (!record || !(await this.available(user, record))) throw new NotFoundException('Cuestionario no disponible.');
+    if (!record) throw new NotFoundException('Evaluación no disponible.');
+    if (record.tipo === 'examen_final' && !cursoId) throw new BadRequestException('cursoId es obligatorio para el examen final.');
+    if (cursoId && !record.cursoId.equals(this.id(cursoId))) throw new NotFoundException('Evaluación no disponible.');
+    if (!(await this.available(user, record))) {
+      if (record.tipo === 'examen_final') throw new ForbiddenException('Completa los cinco módulos y registra una entrega válida del proyecto.');
+      throw new NotFoundException('Cuestionario no disponible.');
+    }
+    if (record.tipo === 'examen_final' && await this.finalCount(this.id(user), record.cursoId, session) >= FINAL_EXAM_ATTEMPTS) throw new ForbiddenException('Límite de tres intentos del examen final agotado.');
     return record;
   }
-  async get(user: string, evaluationId: string) {
-    return this.controlled(async () => { this.id(user); await this.storage(); return this.evaluationView(await this.load(this.id(evaluationId), user)); });
+  async get(user: string, evaluationId: string, cursoId?: string) {
+    return this.controlled(async () => { this.id(user); await this.storage(); return this.evaluationView(await this.load(this.id(evaluationId), user, undefined, cursoId)); });
   }
-  async list(user: string, input: Page & { moduloId: string }) {
+  async list(user: string, input: Page & { moduloId?: string; cursoId?: string; tipo?: 'cuestionario' | 'examen_final' }) {
     return this.controlled(async () => {
       this.id(user); await this.storage();
-      const records = await this.evaluations.find({ moduloId: this.id(input.moduloId), estado: 'publicado', tipo: 'cuestionario' }).select('+preguntas.opcionCorrectaId')
+      const final = input.tipo === 'examen_final';
+      if (final ? (!input.cursoId || input.moduloId !== undefined) : !input.moduloId) throw new BadRequestException('Filtro de evaluación inválido.');
+      const filter = { estado: 'publicado', tipo: final ? 'examen_final' : 'cuestionario', moduloId: final ? null : this.id(input.moduloId!), ...(input.cursoId ? { cursoId: this.id(input.cursoId) } : {}) };
+      const records = await this.evaluations.find(filter).select('+preguntas.opcionCorrectaId')
         .sort({ version: -1, _id: -1 }).skip((input.pagina - 1) * input.limite).limit(input.limite).lean();
       const items = [];
-      for (const record of records) if (await this.available(user, record)) items.push(this.evaluationView(record));
+      for (const record of records) if (await this.available(user, record) && (!final || await this.finalCount(this.id(user), record.cursoId) < FINAL_EXAM_ATTEMPTS)) items.push(this.evaluationView(record));
       return { items, pagina: input.pagina, limite: input.limite };
     });
   }
-  async submit(user: string, evaluationId: string, input: SubmitInput) {
+  async submit(user: string, evaluationId: string, input: SubmitInput, cursoId?: string) {
     return this.controlled(async () => {
       const usuarioId = this.id(user), evaluacionId = this.id(evaluationId), respuestas = normalizeAnswers(input.respuestas);
       if (!Number.isSafeInteger(input.version) || input.version < 1 || input.version > 2147483647 || typeof input.solicitudId !== 'string' || !input.solicitudId.trim() || input.solicitudId.length > 128) throw new BadRequestException('Envío inválido.');
       await this.storage(true);
       const filter = { usuarioId, solicitudId: input.solicitudId };
       const existing = await this.attempts.findOne(filter).lean();
-      if (existing) return this.replay(existing, evaluacionId, input);
+      if (cursoId) this.id(cursoId);
+      const replay = (record: StoredAttempt) => {
+        if (cursoId && !record.cursoId.equals(this.id(cursoId))) throw new NotFoundException('Evaluación no disponible.');
+        if (record.moduloId === null && !cursoId) throw new BadRequestException('cursoId es obligatorio para el examen final.');
+        return this.replay(record, evaluacionId, input);
+      };
+      if (existing) return replay(existing);
       const session = await this.connection.startSession();
       try {
-        try {
+        // At most three slot conflicts can be won by other final submissions. One more
+        // transaction observes exhaustion. Unique-id collisions never overwrite a document.
+        for (let contention = 0; contention <= FINAL_EXAM_ATTEMPTS; contention++) {
+          try {
           return await session.withTransaction(async () => {
             const previous = await this.attempts.findOne(filter).session(session).lean();
-            if (previous) return this.replay(previous, evaluacionId, input);
-            const evaluation = await this.load(evaluacionId, user, session);
+            if (previous) return replay(previous);
+            const evaluation = await this.load(evaluacionId, user, session, cursoId);
             if (evaluation.version !== input.version) throw new ConflictException('Versión de evaluación incompatible.');
             const grade = gradeAnswers(evaluation.preguntas, respuestas);
-            const [record] = await this.attempts.create([{ usuarioId, evaluacionId, cursoId: evaluation.cursoId, moduloId: evaluation.moduloId, version: evaluation.version,
+            const slot = evaluation.tipo === 'examen_final' ? finalAttemptId(usuarioId, evaluation.cursoId, await this.finalCount(usuarioId, evaluation.cursoId, session) + 1) : undefined;
+            const [record] = await this.attempts.create([{ ...(slot ? { _id: slot } : {}), usuarioId, evaluacionId, cursoId: evaluation.cursoId, moduloId: evaluation.moduloId, version: evaluation.version,
               solicitudId: input.solicitudId, respuestas, ...grade, fecha: new Date() }], { session });
             return this.attemptView(record.toObject() as StoredAttempt);
           }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
-        } catch (error) {
+          } catch (error) {
           if ((error as { code?: number }).code !== 11000) throw error;
           const winner = await this.attempts.findOne(filter).lean();
-          if (!winner) throw error;
-          return this.replay(winner, evaluacionId, input);
+            if (winner) return replay(winner);
+            if (contention === FINAL_EXAM_ATTEMPTS) throw error;
+          }
         }
       } finally { await session.endSession(); }
     });
@@ -111,7 +146,7 @@ export class AssessmentsService {
   async history(user: string, input: HistoryQuery) {
     return this.controlled(async () => {
       await this.storage();
-      const filter = { usuarioId: this.id(user), ...(input.evaluacionId ? { evaluacionId: this.id(input.evaluacionId) } : {}), ...(input.moduloId ? { moduloId: this.id(input.moduloId) } : {}) };
+      const filter = { usuarioId: this.id(user), ...(input.evaluacionId ? { evaluacionId: this.id(input.evaluacionId) } : {}), ...(input.moduloId ? { moduloId: this.id(input.moduloId) } : {}), ...(input.cursoId ? { cursoId: this.id(input.cursoId) } : {}) };
       const order: Record<string, 1 | -1> = input.orden === 'fecha_asc' ? { fecha: 1, _id: 1 } : input.orden === 'porcentaje_desc' ? { porcentaje: -1, fecha: -1, _id: -1 } : input.orden === 'porcentaje_asc' ? { porcentaje: 1, fecha: -1, _id: -1 } : { fecha: -1, _id: -1 };
       const records = await this.attempts.find(filter).sort(order).skip((input.pagina - 1) * input.limite).limit(input.limite + 1).lean();
       return { items: records.slice(0, input.limite).map((record) => this.attemptView(record)), pagina: input.pagina, limite: input.limite, hayMas: records.length > input.limite };
@@ -123,6 +158,18 @@ export class AssessmentsService {
       const record = await this.attempts.findOne({ _id: this.id(attemptId), usuarioId: this.id(user) }).lean();
       if (!record) throw new NotFoundException('Intento no disponible.');
       return this.attemptView(record);
+    });
+  }
+  async hasPassedFinalExam(user: string, course: string): Promise<boolean> {
+    return this.controlled(async () => {
+      await this.storage();
+      const results = await this.attempts.aggregate([
+        { $match: { usuarioId: this.id(user), cursoId: this.id(course), moduloId: null, aprobado: true, porcentaje: { $gte: 70 } } },
+        { $lookup: { from: 'evaluaciones', localField: 'evaluacionId', foreignField: '_id', as: 'evaluacion' } },
+        { $match: { 'evaluacion.tipo': 'examen_final', 'evaluacion.cursoId': this.id(course) } },
+        { $limit: 1 }, { $project: { _id: 1 } },
+      ]);
+      return results.length > 0;
     });
   }
 }

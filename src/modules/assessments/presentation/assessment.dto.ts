@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsMongoId, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsMongoId, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class EvaluationParams {
@@ -27,9 +27,19 @@ export class PageDto {
   @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 50 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(50) limite = 20;
 }
 export class EvaluationListDto extends PageDto {
-  @ApiProperty() @IsMongoId() moduloId!: string;
+  @ApiPropertyOptional({ description: 'Obligatorio para cuestionarios.' })
+  @ValidateIf((o: EvaluationListDto) => o.tipo !== 'examen_final' || o.moduloId !== undefined) @IsMongoId() moduloId?: string;
+  @ApiPropertyOptional({ description: 'Obligatorio para examen_final.' })
+  @ValidateIf((o: EvaluationListDto) => o.tipo === 'examen_final' || o.cursoId !== undefined) @IsMongoId() cursoId?: string;
+  @ApiPropertyOptional({ enum: ['cuestionario', 'examen_final'], default: 'cuestionario' })
+  @IsOptional() @IsIn(['cuestionario', 'examen_final']) tipo: 'cuestionario' | 'examen_final' = 'cuestionario';
+}
+export class EvaluationScopeDto {
+  @ApiPropertyOptional({ description: 'Obligatorio al consultar o presentar examen_final; debe coincidir con su curso.' })
+  @IsOptional() @IsMongoId() cursoId?: string;
 }
 export class HistoryDto extends PageDto {
+  @ApiPropertyOptional() @IsOptional() @IsMongoId() cursoId?: string;
   @ApiPropertyOptional() @IsOptional() @IsMongoId() evaluacionId?: string;
   @ApiPropertyOptional() @IsOptional() @IsMongoId() moduloId?: string;
   @ApiPropertyOptional({ enum: ['fecha_desc', 'fecha_asc', 'porcentaje_desc', 'porcentaje_asc'], default: 'fecha_desc' })
