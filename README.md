@@ -217,3 +217,5 @@ La preparación para producción requiere definir el despliegue del frontend, SM
 Lethics se desarrolla de forma colaborativa, con responsabilidades distribuidas entre backend, frontend y funcionalidades educativas. El trabajo se organiza en ramas `feature` y se revisa mediante pull requests hacia `dev`.
 
 Cada cambio debe mantener los contratos compartidos, incluir las comprobaciones pertinentes y respetar los módulos desarrollados por otras personas del equipo.
+
+La [guía de integración del backend educativo](INTEGRACION_BACKEND_EDUCATIVO.md) describe los contratos entre evaluaciones, proyectos, cursos y progreso, sus proveedores pendientes y los pasos de validación para el equipo.
