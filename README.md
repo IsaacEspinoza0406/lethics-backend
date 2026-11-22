@@ -19,13 +19,14 @@ El backend y el frontend se desarrollan en repositorios separados. La API está 
 - Recuperación y restablecimiento de contraseña, con revocación de sesiones.
 - Autenticación de rutas privadas, autorización por rol y consulta del perfil propio.
 - Consulta segura de cuestionarios, calificación en el servidor e historial privado con envíos idempotentes.
+- Examen final con elegibilidad verificada por contratos de integración y un máximo de tres intentos por estudiante y curso, compartidos entre versiones.
 - Envío SMTP, limitación de solicitudes con Redis y comprobaciones operativas.
 - Endpoint de salud y documentación interactiva con Swagger.
 
 **Previstas**
 
 - Consulta y organización de cursos, módulos, lecciones y flashcards.
-- Flujo completo del examen final, actividades y entregas de proyectos.
+- Integración del examen final con progreso y entregas de proyectos, además de las actividades educativas.
 - Seguimiento del progreso y resultados del estudiante.
 
 Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints en la estructura actual del repositorio.
@@ -154,10 +155,10 @@ Las rutas implementadas utilizan el prefijo `/api/v1`:
 - `GET /users/me`: perfil propio con `Authorization: Bearer <accessToken>`.
 - `POST /auth/password/forgot`: solicitud de recuperación mediante `correo`.
 - `POST /auth/password/reset`: restablecimiento con `token` y `nuevaContraseña`.
-- `GET /evaluaciones?moduloId=<ObjectId>`: cuestionarios publicados disponibles, por versión y con paginación.
-- `GET /evaluaciones/:evaluacionId`: cuestionario sin respuestas correctas.
-- `POST /evaluaciones/:evaluacionId/intentos`: envío completo con `version`, `solicitudId` y `respuestas` (`preguntaId`, `opcionId`).
-- `GET /intentos-evaluacion`: historial propio paginado, con filtros por evaluación/módulo y orden por fecha o porcentaje.
+- `GET /evaluaciones?moduloId=<ObjectId>`: cuestionarios publicados disponibles, por versión y con paginación. Para exámenes: `?tipo=examen_final&cursoId=<ObjectId>`.
+- `GET /evaluaciones/:evaluacionId`: evaluación sin respuestas correctas; exige `?cursoId=<ObjectId>` cuando es examen final.
+- `POST /evaluaciones/:evaluacionId/intentos`: envío completo con `version`, `solicitudId` y `respuestas` (`preguntaId`, `opcionId`). Para examen final también exige `?cursoId=<ObjectId>`.
+- `GET /intentos-evaluacion`: historial propio paginado, con filtros por evaluación/módulo/curso y orden por fecha o porcentaje.
 - `GET /intentos-evaluacion/:intentoId`: detalle de un intento propio.
 
 Swagger en `/docs` permite explorar los contratos y muestra las operaciones de autenticación habilitadas por configuración. Una ruta implementada puede responder 503 si está deshabilitada o falta una protección obligatoria. Las respuestas de registro y recuperación no confirman la existencia de cuentas ni la entrega del correo.
@@ -196,7 +197,9 @@ Mailpit se crea en un proyecto Docker independiente y se elimina al terminar, ju
 
 La base de identidad y seguridad y el núcleo de cuestionarios están implementados con pruebas unitarias y de integración. Los cuestionarios exigen responder todas las preguntas, se aprueban desde el 70% y permiten nuevos intentos independientes; `solicitudId` evita duplicar un mismo envío técnico.
 
-La disponibilidad de cuestionarios depende de un contrato con cursos, módulos y progreso todavía no integrado: el proveedor predeterminado falla cerrado y las pruebas usan fixtures explícitos. Las rutas están implementadas, pero no se afirma disponibilidad educativa real sin ese adaptador y la preparación de datos e índices. Los contenidos, el flujo de examen final, las entregas y el progreso continúan en desarrollo.
+El examen final exige completar los cinco módulos y registrar una entrega válida del proyecto, sin aprobación docente adicional. Sus tres intentos se controlan en MongoDB y no se reinician al publicar otra versión. Si faltan requisitos o se agotan los intentos, la consulta y un nuevo envío reciben 403; el listado no incluye el examen. El historial propio y los reintentos idempotentes de envíos ya confirmados siguen disponibles.
+
+La disponibilidad educativa depende de contratos de cursos, progreso y entregas todavía no integrados: el proveedor predeterminado falla cerrado con 503 y las pruebas usan fixtures explícitos. Las rutas están implementadas, pero no se afirma disponibilidad educativa real sin esos adaptadores y la preparación de datos e índices. Los contenidos, las entregas y el progreso continúan en desarrollo.
 
 La preparación para producción requiere definir el despliegue del frontend, SMTP, Origin/CORS, proxies, retención de sesiones y recuperación durable de los envíos de correo. Las pruebas locales no sustituyen estas decisiones. Los permisos administrativos todavía no están aprobados.
 
