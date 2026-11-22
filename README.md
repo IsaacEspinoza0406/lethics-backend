@@ -1,5 +1,140 @@
 # Lethics — Backend
 
+## Fase 3E: guards y autorización
+
+`AccessControlModule` instala globalmente `JwtAuthGuard` y después `RolesGuard`: las rutas de controladores Nest son privadas por defecto. `@Public()` mantiene públicas las rutas existentes de `auth` y `health`; no desactiva `AuthHttpGuard`, las cuotas Redis, las comprobaciones operativas ni las restricciones de Origin de login/refresh/logout. Swagger continúa disponible en `/docs` conforme a su configuración anterior. `@Public(false)` permite proteger un método dentro de un controlador público.
+
+El guard solo acepta un token en `Authorization: Bearer <access-token>` (sin alternativas en cookies, query o body). Rechaza cabeceras duplicadas/ambiguas. Reutiliza `AccessTokenService`: firma HS256, issuer/audience configurados, expiración y claims `sub`, `jti`, `iat`, `exp` válidos. `sub` debe identificar un ObjectId. Consulta MongoDB en cada petición: usuario existente, correo verificado con fecha válida y no futura, y estado compatible con la misma política de login/sesiones. Una cuenta verificada heredada sin `seguridadVerificacion` sigue admitida; un estado presente parcial o inválido se rechaza. No se inventan estados de suspensión que el modelo todavía no define. Autenticación inválida: 401 uniforme; fallo de consulta: 503 sanitizado y sin acceso.
+
+`@Roles('estudiante')` exige el rol persistido en MongoDB; no usa roles del JWT, parámetros ni cabeceras del cliente. `estudiante` es el único rol aprobado para metadata de permisos. Identidad autenticada sin rol permitido: 403. Sin `@Roles`, una ruta privada exige identidad válida pero no añade una restricción de rol; `@Roles()` sin argumentos deniega todos. No se publican funciones administrativas.
+
+`GET /api/v1/users/me` exige Bearer y rol `estudiante`, retorna exclusivamente `{ id, nombre, correo, rol }` del propio usuario y establece `Cache-Control: no-store`. No acepta identificadores ajenos para seleccionar el perfil. Una segunda lectura comprueba nuevamente elegibilidad y rol antes de responder. La proyección explícita evita exponer hashes, estados internos o el contenido libre de `perfil`, incluso con consultas lean. Swagger documenta Bearer y las respuestas 200/401/403/503 sin tokens ni credenciales de ejemplo.
+
+### Integración en módulos futuros
+
+Los controles están en [access-control.module.ts](src/modules/auth/access-control.module.ts), [jwt-auth.guard.ts](src/modules/auth/jwt-auth.guard.ts), [roles.guard.ts](src/modules/auth/roles.guard.ts) y [access-control.ts](src/modules/auth/access-control.ts). Con la aplicación principal, los guards ya son globales; un host Nest independiente debe importar `AccessControlModule` para instalar ambos. Los módulos educativos podrán usar `@Roles('estudiante')` y `@CurrentUser() user: AuthenticatedUser`. El contexto inmutable contiene solo `id` y `rol` obtenidos desde MongoDB, sin secretos. No necesitan consultar los modelos internos de identidad. Cuando se requiera consultar un perfil, IdentityModule exporta [AuthenticatedIdentityService](src/modules/identity/application/authenticated-identity.service.ts), que devuelve únicamente la proyección segura. La autorización por propiedad de recursos deberá utilizar el `id` validado; el guard de roles no la sustituye. No se modifican módulos educativos.
+
+### Garantías de revocación y dependencias
+
+Logout y la revocación familiar impiden renovar refresh tokens. **Un access JWT ya emitido puede seguir autenticando hasta expirar (15 minutos), también en `/users/me`**, si la cuenta continúa elegible. El guard no consulta sesiones ni inventa una blacklist; sí consulta la identidad/rol actuales en MongoDB. No hay revocación instantánea de access por logout. `/users/me` no consume Redis ni depende de las cuotas de los endpoints de autenticación: no se añade una cuota nueva. MongoDB no disponible impide autenticar. Las garantías fail closed de Redis para login/refresh/logout permanecen sin cambios. CORS, proxies, cookies y restricciones de Origin existentes no se alteran.
+
+Pruebas específicas: `test/access-control.spec.ts` y `test/sessions.integration.spec.ts`; esta última reutiliza bases UUID y namespaces Redis exclusivos mediante las variables de integración existentes. Cubren JWT y claims inválidos, Bearer ausente/manipulado/duplicado, metadata pública/privada, contexto mínimo, rol persistido, cuentas incompatibles, perfil seguro, fallos de consulta y JWT después de logout. La ejecución completa se realiza con `node scripts/mailpit.cjs suite`, que también prepara y limpia Mailpit aislado sin enviar correo real. Los apartados siguientes conservan resultados históricos de sus fases.
+
+Validación final 3E (2026-11-21): `npm.cmd run build` y `npm.cmd run lint` aprobados. Última ejecución específica: 55/55 pruebas en 2 suites, 0 fallidas/omitidas, 24.088 s. Única suite completa final `npm test -- --detectOpenHandles`: **272/272 pruebas en 26 suites**, 0 fallidas, 0 omitidas, 136.482 s, sin advertencias de recursos abiertos. Se verificaron 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red temporal eliminada. Redis conserva TTL en namespaces exclusivos de prueba, sin FLUSH ni borrado de claves compartidas. `git diff --check` aprobado y rama conservada, sin escrituras de Git. No se modificaron configuración privada, datos/cuotas reales, esquemas, módulos educativos ni volúmenes. Se preservaron los cambios locales previos de 3C/3D; documentación local ignorada por Git. Fase 3E validada dentro de su alcance, sin avanzar al siguiente incremento.
+
+## Fase 3D: rotación y revocación de sesiones
+
+Se añaden `POST /api/v1/auth/refresh` y `POST /api/v1/auth/logout`, reutilizando login, la cookie `lethics_refresh`, JWT HS256, tokens opacos, la fachada y Redis. No se modifica el esquema aprobado ni se crea otra colección. Se conservan los cambios locales de Fase 3C y los contratos anteriores. Las secciones históricas siguientes describen el alcance de cada incremento; esta sección documenta el estado de renovación/logout.
+
+### Contratos y protección HTTP
+
+Ambas rutas exigen `AUTH_HTTP_ENABLED=true`, modo directo sin proxies, infraestructura lista y **`AUTH_BROWSER_ORIGIN` configurado**. Si falta ese Origin de confianza, permanecen bloqueadas con 503 y no aparecen en Swagger. Cada petición debe tener `Content-Type: application/json` y `Origin` exactamente igual al configurado; enviar `{}` como cuerpo. Origin ausente/no autorizado o `Sec-Fetch-Site: cross-site` produce 403; otro tipo de contenido, 415. Se conserva CORS deshabilitado y no se confía en cabeceras de proxies. Las herramientas de línea de comandos también deben enviar el Origin autorizado; esa cabecera es protección de navegador, no reemplaza la posesión del refresh.
+
+El token se lee únicamente de la cookie existente, no de JSON, Authorization ni parámetros. Se exige codificación base64url canónica de 32 bytes; duplicados de la cookie se rechazan como credencial ambigua. No se añade cookie-parser ni dependencia nueva. Cookie HttpOnly, SameSite=Strict, Path=/api/v1/auth, sin Domain y Secure obligatorio en producción, igual que login. Las respuestas evitan caché y nunca incluyen refresh en JSON ni tokens/hashes en logs.
+
+| Operación | Resultado |
+|---|---|
+| Refresh válido | 200 con `accessToken`, `tokenType=Bearer`, `expiresIn`; nueva cookie refresh. |
+| Refresh ausente/manipulado/desconocido/expirado/revocado o cuenta no elegible | 401 `Sesión no válida.`, sin access token; se elimina la cookie. |
+| Logout confirmado | 204 sin cuerpo, revocación del lado servidor de la sesión lógica identificada y eliminación de cookie. |
+| Logout sin cookie válida o sin sesión correspondiente | 204 idempotente; elimina cookie, sin afirmar revocación de una sesión que no pudo identificarse. |
+| Cuota excedida / infraestructura insegura | 429 / 503. Un 503 no se presenta como logout confirmado ni borra la cookie fingiendo revocación. |
+
+Redis aplica cuotas nuevas independientes por origen: `RATE_LIMIT_REFRESH_MAX=30` y `RATE_LIMIT_LOGOUT_MAX=30`, cada una con ventana inicial de 600 s (`RATE_LIMIT_REFRESH_WINDOW_SECONDS` / `RATE_LIMIT_LOGOUT_WINDOW_SECONDS`, hasta 3600 s). Mantiene cuotas previas, cuarentena y fail closed. La cuota se aplica antes de consultar sesiones; solicitudes rechazadas por Origin/JSON se detienen antes de consumirla. No se usan locks ni historial de reutilización en Redis.
+
+### Rotación atómica e historial compatible
+
+Sobrescribir `refreshTokenHash` en el mismo documento perdería la evidencia del token anterior. En cambio, cada generación se conserva como un documento en **la misma colección `sesiones` y con los mismos campos**. Un login crea la raíz y una familia UUID. Refresh busca el hash SHA-256 separado por propósito, exige un único documento, fecha válida/no vencida, `revocadaEn=null`, familia conocida y usuario aún elegible con la misma política de login. Registros ambiguos por hash duplicado fallan con 503; estados heredados sin familia o incompatibles se rechazan sin inventar datos ni migrarlos.
+
+En una transacción con snapshot y escritura majority se consume condicionalmente el documento vigente (`revocadaEn=null` y no vencido), se marca revocado y se inserta otro documento con nuevo hash y **el mismo usuario, familia y expiraEn**. Nunca se sobrescribe el hash anterior ni se almacena el refresh en claro. `creadaEn` del sucesor registra su emisión. La expiración absoluta de siete días iniciales **no se prolonga** al rotar; un nuevo login independiente inicia otra familia. Una inserción fallida revierte la revocación anterior y no emite credenciales.
+
+Las transacciones concurrentes compiten por el mismo documento activo. Solo una puede consumirlo; al reintentarse la otra transacción encuentra el token ya revocado y aplica la política de reutilización. La revocación por familia escribe sus documentos activos, por lo que también entra en conflicto con una rotación concurrente del sucesor; no basta con una lectura previa fuera de transacción. Logout usa el mismo mecanismo transaccional para que no quede un sucesor renovable tras su confirmación.
+
+### Reutilización demostrable y alcance de revocación
+
+Presentar un token cuyo hash conservado ya tiene revocación demuestra **uso de una credencial invalidada**, aunque no demuestra robo ni distingue una carrera legítima, un reintento HTTP o un token anterior al logout. La política es conservadora: revoca los documentos activos de la familia y usuario correspondientes y confirma esa escritura **antes** de emitir 401. No se lanza el error dentro de la transacción, pues eso revertiría la revocación. Si la escritura falla, retorna 503 y no afirma que se haya revocado la familia. Un token aleatorio/manipulado que no corresponde a un hash conocido no identifica una familia y no provoca revocación colateral.
+
+No se revocan familias independientes del mismo usuario. Logout revoca la sesión lógica/familia identificada, también si la cookie corresponde a un ancestro ya rotado, para impedir que un sucesor quede activo. Logout repetido, expirado o ya revocado es idempotente. Una sesión heredada sin familia solo permite revocar su propio documento al hacer logout; no se adivinan grupos.
+
+Dos refresh simultáneos pueden producir 200 y 401: el perdedor revoca la familia, de modo que la cookie del ganador tampoco permitirá nuevas renovaciones. El frontend debe coordinar un único refresh en vuelo por sesión, incluidas pestañas, y evitar reintentos automáticos con la cookie anterior. Una respuesta perdida después del commit deja el mismo riesgo: repetir el token consumido se detecta como reutilización. No se implementa ventana de gracia ni se promete idempotencia HTTP.
+
+**Límite:** revocar refresh/familia no invalida inmediatamente los JWT de acceso ya firmados; conservan su expiración de hasta 15 minutos. No se añadió un guard de contenido ni una lista de revocación de access tokens. La verificación/estado de cuenta se reevalúa para cada refresh, pero cambios externos concurrentes de cuenta requieren la coordinación pendiente ya documentada en Fase 3C.
+
+### Retención, operación y pruebas
+
+La detección depende de conservar los hashes revocados mientras pueda existir un sucesor válido. No eliminarlos ni sobrescribirlos durante esa ventana. No se añade TTL, purga automática, índice ni migración real. El historial crece por cada rotación; antes de producción debe aprobarse retención/limpieza posterior a expiración y evaluar índices de búsqueda por hash y familia con datos representativos. Sin índices adicionales estas búsquedas pueden recorrer la colección; no se declara optimización sin medición. Restauraciones de datos anteriores pueden reactivar estados pasados y requieren un procedimiento operativo separado.
+
+Las pruebas usan MongoDB UUID y namespaces Redis exclusivos con las utilidades existentes, sin correos ni datos reales. Cubren éxito, expiración, revocación, manipulación/cookie duplicada/body ignorado, retención del historial y expiración absoluta, reutilización de ancestros, revocación de familia sin afectar otra, carreras refresh/refresh, refresh/logout y reutilización/rotación, logout repetido y posterior refresh, rollback de inserción, fallo de revocación, Redis, cuotas independientes, cookies y Origin/JSON. Una prueba unitaria comprueba específicamente que la revocación se confirme antes del 401.
+
+```powershell
+# Con variables de integración seguras existentes:
+node node_modules/jest/bin/jest.js --runInBand --runTestsByPath test/session-policy.spec.ts test/sessions.integration.spec.ts --detectOpenHandles
+npm.cmd run lint
+npm.cmd run build
+# Invoca npm test -- --detectOpenHandles con todas las integraciones y Mailpit efímero:
+node scripts/mailpit.cjs suite
+```
+
+Archivos nuevos: [session.service.ts](src/modules/identity/application/session.service.ts), [session-account-policy.ts](src/modules/identity/application/session-account-policy.ts), [session-policy.spec.ts](test/session-policy.spec.ts), [sessions.integration.spec.ts](test/sessions.integration.spec.ts). Cambios sobre Fase 3C: controlador, guard/política/errores HTTP, helper de cookie/Origin, fachada, IdentityModule, LoginService (solo comparte elegibilidad), limitador, configuración/Swagger, entorno de ejemplo y documentación local. No se cambió el esquema Mongoose ni los servicios criptográficos ni los módulos educativos.
+
+| Modificados en Fase 3D | Archivos |
+|---|---|
+| Aplicación e inyección | [login.service.ts](src/modules/identity/application/login.service.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [identity.module.ts](src/modules/identity/identity.module.ts) |
+| HTTP y Swagger | [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [login-http.policy.ts](src/modules/auth/login-http.policy.ts), [configure-app.ts](src/configure-app.ts) |
+| Cuotas y configuración | [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts), [environment.ts](src/config/environment.ts), [.env.example](.env.example) |
+| Documentación | Este README y [arquitectura.md](docs/arquitectura.md), local e ignorado por Git |
+
+Validación final Fase 3D (2026-11-21): lint y build aprobados. Pruebas nuevas: 10 unitarias aprobadas y 17 de integración aprobadas (la integración corregida terminó en 18,084 s). Regresiones específicas de login/limitador/permisos: 28 aprobadas en 3 suites (19,435 s). Única ejecución completa final de `npm test -- --detectOpenHandles`: **234 aprobadas en 25 suites, 0 fallidas y 0 omitidas** (129,2 s), sin advertencias de recursos abiertos. Limpieza posterior: 0 bases MongoDB temporales, 0 contenedores Mailpit y 0 directorios de certificados; red eliminada por Compose. Redis mantiene solo claves de pruebas aisladas con TTL. `git diff --check` aprobado. Rama y cambios locales previos conservados, sin escrituras de Git, configuración privada, datos/cuotas reales ni volúmenes. No se habilitó CORS ni proxies ni se avanzó a otra fase.
+
+## Fase 3C: login y creación de sesiones
+
+`POST /api/v1/auth/login` reutiliza Argon2id, JWT HS256, tokens opacos y la fachada de identidad. No implementa refresh, logout ni recuperación de contraseña. Conserva los contratos de registro/verificación/reenvío y los campos de las colecciones existentes. Como las otras rutas de identidad, exige `AUTH_HTTP_ENABLED=true`, origen directo y las comprobaciones operativas. Login no necesita transporte SMTP. Este cambio no modifica la configuración privada ni activa HTTP públicamente.
+
+Entrada JSON: `{"correo":"estudiante@example.test","contraseña":"contraseña-ficticia"}`. Correo usa trim/minúsculas; contraseña no se recorta ni normaliza. Se rechazan propiedades adicionales, incluido `rol`, correos no válidos y contraseñas vacías o mayores de 1024 caracteres. Respuesta 200: `{"accessToken":"<JWT de acceso>","tokenType":"Bearer","expiresIn":900}` más cookie HttpOnly; nunca refresh en JSON. Cliente: mantener el access token en memoria, sin recomendar almacenamiento persistente en localStorage. No registrar tokens, cookies, cuerpos de login ni hashes en logs del cliente, proxy o servidor.
+
+Usuario inexistente, contraseña incorrecta, correo sin verificar y estado de seguridad incompatible responden **401 `Credenciales no válidas.`**, sin cookie ni sesión. Se utiliza una verificación Argon2id contra un hash ficticio aleatorio preparado al iniciar para cuentas inexistentes/hashes inválidos; reduce diferencias obvias de trabajo, sin garantizar tiempos idénticos. No se expone existencia, rol o estado de cuenta. Una fecha de verificación debe ser válida y no futura. Se acepta una cuenta verificada heredada sin `seguridadVerificacion`; si ese campo está presente pero es parcial/inválido, login falla cerrado. Los contadores de verificación no se reinician ni se reutilizan como bloqueo de login. El modelo aprobado no tiene un campo general de bloqueo/suspensión: su definición y cambios concurrentes futuros requieren un acuerdo separado; no se inventó uno ni se atribuyó esa función a `perfil`.
+
+Redis limita la operación `login`, separada de register/verify/resend: **10 solicitudes por origen cada 600 s**, configurables mediante `RATE_LIMIT_LOGIN_MAX` y `RATE_LIMIT_LOGIN_WINDOW_SECONDS` (máximo 3600 s). La cuota se consume antes de DTOs, consultas y Argon2id. Solo se usa la IP del socket, sin confiar en cabeceras de proxies. Se mantienen cuarentena, persistencia y fail closed; cuota excedida da 429 y fallo del control da 503. Es un límite por origen, no una protección completa contra ataques distribuidos por cuenta. Las cuotas previas no se modifican. Cambiar parámetros/namespace/claves en un entorno operativo exige conservar las medidas de continuidad ya documentadas.
+
+JWT conserva `sub`, `iss`, `aud`, `iat`, `exp`, `jti`, algoritmo HS256 y validación de issuer/audience. `JWT_ACCESS_TTL_SECONDS` sigue siendo obligatorio; valor inicial 900 s, ahora validado entre 1 y 900 para asegurar expiración corta. Cada login genera un jti distinto. No se almacena el JWT en MongoDB ni se emiten roles desde el cliente. No se añadió un guard de contenido protegido: el consumo del access token en esos endpoints corresponde a otro incremento.
+
+Cada login correcto crea una sesión independiente en `sesiones`: `usuarioId`, `refreshTokenHash`, `creadaEn`, `expiraEn`, `revocadaEn=null`, `familia=<UUID>` y `_id`. Refresh usa los 32 bytes criptográficos del servicio existente y SHA-256 con separación por propósito `refresh`; solo persiste el hash. `AUTH_REFRESH_TTL_SECONDS` tiene **604800 s (7 días)** por defecto, valor operativo provisional configurable entre 1 y 604800 s. Los logins concurrentes crean sesiones/familias distintas, sin invalidar otras sesiones ni imponer un límite de dispositivos no acordado. En transacción se relee usuario/contraseña/estado y se inserta sesión; un fallo no devuelve credenciales. Los cambios futuros de restricciones/contraseña y revocación necesitarán coordinación explícita con sesiones y JWT, sin asumir que esta lectura de snapshot los serializa con escritores externos.
+
+Se comprueban índices existentes de identidad y existencia de `sesiones`; no se instala ningún índice ni se crea una colección al iniciar o hacer login. Si falta `sesiones`, se devuelve 503 antes de insertar, evitando su creación implícita por MongoDB. No se añade TTL: la expiración deberá validarse al consumir refresh en el siguiente incremento, y cualquier limpieza/índice requiere aprobación. Una pérdida de respuesta HTTP tras commit puede dejar una sesión válida cuyo refresh el cliente no recibió; este incremento no incorpora compensación ni reintento idempotente del login.
+
+### Cookie y navegador
+
+Cookie `lethics_refresh`: **HttpOnly**, **SameSite=Strict**, **Path=/api/v1/auth**, sin Domain (host-only), Expires/Max-Age ligados a la expiración de la sesión. `AUTH_REFRESH_COOKIE_SECURE` es false por defecto en desarrollo/test para HTTP local, y true obligatorio en producción. Producción requiere HTTPS; esta configuración no configura TLS ni habilita proxies de confianza. Las respuestas de login no deben almacenarse en caché (`Cache-Control: no-store`; éxito también `Pragma: no-cache`).
+
+CORS no estaba habilitado y permanece deshabilitado: no se agrega `*`, credentials global ni confianza en proxies. Login solo acepta `application/json` (415 en otro caso). Si el navegador envía Origin, debe coincidir exactamente con `AUTH_BROWSER_ORIGIN` (sin barra final); sin esa configuración se rechazan solicitudes con Origin. En producción ese Origin debe ser HTTPS. Se rechaza `Sec-Fetch-Site: cross-site` con 403 incluso si aparece un Origin configurado. Las herramientas sin Origin pueden usar JSON; ello no equivale a autenticación basada en esa cabecera. Para frontend se requiere despliegue del mismo origen o proxy local controlado. Antes de habilitar CORS entre orígenes o cookies entre sitios se debe acordar una política CSRF/CORS específica. Refresh/logout todavía no existen y necesitarán sus propias protecciones.
+
+### Validación reproducible
+
+Usar `LETHICS_IDENTITY_TEST_URI` y `LETHICS_REDIS_TEST_URL` seguros con los helpers existentes. Las pruebas de login crean solo `usuarios`, `tokens_cuenta` y `sesiones` dentro de la base UUID de esa ejecución, con namespace Redis exclusivo y TTL. No escriben datos reales ni envían correo.
+
+```powershell
+# Con las variables de integración seguras ya definidas:
+node node_modules/jest/bin/jest.js --runInBand --runTestsByPath test/login-http.spec.ts test/login.integration.spec.ts --detectOpenHandles
+npm run build
+npm run lint
+# Regresión completa con MongoDB/Redis aislados y Mailpit efímero:
+node scripts/mailpit.cjs suite
+```
+
+Pendiente para producción/siguiente incremento: rotación/consumo de refresh, revocación/logout, defensa CSRF de esas operaciones, guard de recursos protegidos, definición de suspensión de cuentas, medición de Argon2id y defensa frente a ataques distribuidos. Los JWT ya emitidos no tienen revocación inmediata implementada. No se avanzó a esas funcionalidades ni se modificaron módulos educativos.
+
+Validación de Fase 3C (2026-11-21): build y lint aprobados; pruebas nuevas de login 24/24 en 2 suites (19,829 s) y regresiones específicas de HTTP/limitador/permisos 39/39 en 3 suites (19,851 s). Única ejecución completa final mediante `npm test -- --detectOpenHandles`: **207 aprobadas en 23 suites, 0 fallidas y 0 omitidas** (124,333 s), sin advertencias de recursos abiertos. Comprobación posterior: 0 bases temporales, 0 contenedores Mailpit y 0 directorios de certificados; red Mailpit eliminada, Redis con TTL de sus claves aisladas. `git diff --check` aprobado. Rama `feat/auth-login-sessions` conservada, sin escrituras de Git, datos reales, configuración privada ni volúmenes.
+
+### Archivos de Fase 3C
+
+| Cambio | Archivos |
+|---|---|
+| Creados: aplicación y HTTP | [login.service.ts](src/modules/identity/application/login.service.ts), [login.dto.ts](src/modules/identity/presentation/dto/login.dto.ts), [login-http.policy.ts](src/modules/auth/login-http.policy.ts) |
+| Creados: pruebas | [login-http.spec.ts](test/login-http.spec.ts), [login.integration.spec.ts](test/login.integration.spec.ts) |
+| Modificados: integración y HTTP | [identity.module.ts](src/modules/identity/identity.module.ts), [identity-operations.service.ts](src/modules/identity/application/identity-operations.service.ts), [auth.controller.ts](src/modules/auth/auth.controller.ts), [auth-http.guard.ts](src/modules/auth/auth-http.guard.ts), [auth-http.policy.ts](src/modules/auth/auth-http.policy.ts), [auth-http.errors.ts](src/modules/auth/auth-http.errors.ts), [configure-app.ts](src/configure-app.ts) |
+| Modificados: configuración y cuotas | [environment.ts](src/config/environment.ts), [origin-rate-limit.service.ts](src/infrastructure/rate-limit/origin-rate-limit.service.ts), [.env.example](.env.example) |
+| Documentación | Este README y [arquitectura.md](docs/arquitectura.md), local e ignorado por Git |
+
 ## Incremento 7: confiabilidad de correo
 
 El envío continúa después del commit de usuario/token. Antes de este incremento se realizaba una sola llamada SMTP: un fallo dejaba la cuenta sin verificar y el token vigente, sin recuperación automática. Ahora el [adaptador existente](src/modules/identity/infrastructure/smtp-verification-mailer.ts) aplica una [política conservadora](src/modules/identity/infrastructure/smtp-delivery-policy.ts) de **dos intentos como máximo** por invocación, con una sola espera de **500 ms**. No se reejecutan registro, transacciones ni generación de códigos; no se descuentan emisiones o solicitudes adicionales por reintentar SMTP.
@@ -84,7 +219,7 @@ Validación del incremento 6 (2026-11-21): build y lint aprobados; pruebas espec
 
 Para producción siguen pendientes el transporte autorizado, identidad de remitente, DNS/SPF/DKIM/DMARC según el despliegue, custodia de secretos y certificados, y la decisión sobre recuperación de entregas después del commit sin cola durable. La aceptación SMTP en Mailpit no demuestra entrega a destinatarios externos ni elimina esos requisitos. Referencias: [imagen oficial](https://mailpit.axllent.org/docs/install/docker/), [STARTTLS y autenticación](https://mailpit.axllent.org/docs/configuration/smtp-authentication/), [API](https://mailpit.axllent.org/docs/api-v1/).
 
-Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones están en [arquitectura](docs/arquitectura.md). Incluye infraestructura de seguridad y contratos HTTP de registro/verificación con activación controlada; no implementa inicio de sesión. Las secciones de incrementos anteriores conservan su contexto histórico; el estado HTTP actual está en [Incremento 5](#incremento-5-endpoints-http-de-identidad).
+Base del backend REST de Lethics. El alcance y el modelo aprobado están en [el contexto](docs/LETHICS_BACKEND_CONTEXTO.md); las decisiones están en [arquitectura](docs/arquitectura.md). Incluye identidad HTTP y login con activación controlada. Las secciones de incrementos anteriores conservan su contexto histórico; el estado de login está en Fase 3C y los contratos anteriores en Incremento 5.
 
 ## Requisitos
 
