@@ -8,3 +8,6 @@ coverage/
 
 # Documentación interna local
 docs/
+
+# Notas internas del equipo (no se versionan)
+decisiones-*.md
