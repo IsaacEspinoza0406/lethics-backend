@@ -1,5 +1,56 @@
 # Lethics — Backend
 
+## Fase 3F: recuperación segura de contraseña
+
+Se reutilizan `IdentityModule`, `SecurityModule`, `tokens_cuenta`, Argon2id, el transporte SMTP y los controles HTTP existentes. No se añaden colecciones, campos, índices automáticos ni dependencias. Las rutas están marcadas como operaciones públicas de autenticación; mantienen los guards operativos, Redis fail closed, filtro de excepciones, JSON obligatorio, política de Origin de login (si se presenta debe coincidir; cross-site rechazado), CORS y proxies deshabilitados. No leen credenciales de cookies ni de query.
+
+| Endpoint | Cuerpo | Resultado |
+|---|---|---|
+| `POST /api/v1/auth/password/forgot` | `{ "correo": "student@example.test" }` | 202, mensaje genérico, sin confirmar existencia ni entrega. |
+| `POST /api/v1/auth/password/reset` | `token` recibido por correo y `nuevaContraseña` | 200 `Contraseña restablecida.` después de confirmar la transacción. |
+
+Token incorrecto, vencido, revocado, usado, de otro propósito o asociado a una cuenta incompatible: 400 uniforme. DTO inválido: 400; cuota por origen: 429; infraestructura obligatoria no disponible: 503 sanitizado. Las respuestas llevan `Cache-Control: no-store`. No se admiten usuarioId, rol ni otros campos adicionales en el cuerpo. La contraseña conserva exactamente la política del registro: cadena no vacía, máximo 1024 caracteres, sin normalización de su contenido; no se incorpora una política de complejidad nueva.
+
+### Solicitud y entrega sin enumeración directa
+
+Se normaliza correo con trim/lowercase. Antes de aceptar se comprueban índices ya instalados, las tres colecciones existentes, Redis y disponibilidad SMTP/TLS/autenticación para todos los destinatarios por igual. `forgot` permanece bloqueado sin transporte SMTP real configurado; `reset` no necesita SMTP para consumir una credencial ya emitida. Swagger solo documenta las operaciones habilitadas según esta política y no incluye tokens reales.
+
+La búsqueda de la cuenta, emisión y envío se difieren fuera de la respuesta HTTP para no esperar SMTP solamente cuando existe la cuenta. Se aceptan como máximo 100 tareas en memoria por proceso; saturación da 503 independiente del destinatario. La cuota por correo se aplica a direcciones existentes e inexistentes y su rechazo también da el mismo 202. Solo se envía a cuentas verificadas elegibles según la política ya usada en login; no se activa una cuenta pendiente o restringida. El mismo cuerpo/estado se usa para inexistentes, no verificadas, cuota de cuenta y rechazo de destinatario. Esto evita la diferencia directa de esperar entrega, sin prometer tiempo constante frente a carga o efectos de recursos compartidos.
+
+**202 confirma aceptación de una solicitud, nunca entrega.** Un fallo posterior de MongoDB o SMTP se registra de forma genérica, sin dirección, token, hash, contraseña ni error del proveedor. El error SMTP o resultado incierto revoca mediante condición de hash la credencial emitida; no invalida una emisión posterior concurrente. Si la revocación no puede confirmarse por un fallo de MongoDB, se registra fallo genérico y no se afirma revocación ni entrega; persiste el límite de expiración. Los reintentos SMTP reutilizan el mensaje/token y la política existente: máximo dos intentos, espera de 500 ms y ventana de 15 segundos; solamente errores demostrablemente previos al mensaje o rechazos temporales seguros. DATA/resultado incierto nunca se reintenta automáticamente. Message-ID no garantiza deduplicación ni entrega al buzón.
+
+El trabajo es **solo en proceso, no durable**: una caída brusca puede perder una solicitud aceptada o dejar un token persistido sin correo. No se almacena texto plano ni una cola en `tokens_cuenta`; el usuario debe solicitar otra recuperación, sujeto a cuota. En cierre ordenado se rechazan solicitudes nuevas y se esperan las tareas en `beforeApplicationShutdown`, antes de cerrar SMTP/MongoDB/Redis; el arranque habilita shutdown hooks. Un SIGKILL, caída de máquina o plazo del orquestador insuficiente no permite ese drenaje. Recuperación durable requeriría una propuesta de outbox/worker y modelo adicional aprobado; queda pendiente, sin implementación en esta fase.
+
+### Token y consistencia
+
+Token aleatorio de 32 bytes (256 bits), base64url canónico de 43 caracteres. Solo se guarda SHA-256 con dominio `lethics:password-reset:` y tipo `recuperacion`, separado de JWT, verificación HMAC y refresh. El correo entrega la credencial en texto, sin URL construida a partir de Host/Forwarded; el frontend deberá recogerla en un formulario y enviarla exclusivamente en el cuerpo HTTPS, sin query, logs ni almacenamiento persistente.
+
+Se usa un único registro de recuperación por usuario, con `_id` derivado de SHA-256 de un dominio fijo más el identificador del usuario (primeros 12 bytes). El identificador no es una credencial. El upsert condiciona usuario/tipo; una colisión con otro documento falla cerrado, sin sobrescribirlo. Sustituir su hash invalida el token anterior; no se conserva historial de emisiones de recuperación. Los documentos anteriores de recuperación ajenos a ese registro se revocan transaccionalmente. Las solicitudes simultáneas escriben el mismo documento; solo el hash más reciente es válido y un mensaje anterior podría llegar después del más reciente. Las carreras iniciales de upsert por clave duplicada se reintentan como máximo dos veces adicionales, sin generar otro token. La verificación de correo y sus cuotas no se alteran.
+
+`reset` deriva la identidad exclusivamente del token persistido y comprueba propósito, expiración con reloj del servidor, uso/revocación y elegibilidad. Una transacción snapshot/majority consume condicionalmente el token, actualiza el hash Argon2id, invalida otras recuperaciones activas y revoca todas las familias de sesión del usuario. Cualquier fallo revierte el conjunto; dos reset con el mismo token solo permiten un éxito. La escritura de sesiones comparte los documentos de rotación y cubre carreras con refresh. No afecta sesiones de otras cuentas.
+
+Para cerrar la carrera entre un login que validó la contraseña antigua y un reset, login genera una nueva codificación Argon2id con sal de la misma contraseña y la escribe junto con la sesión. Es una escritura real del campo aprobado, no un `$set` sin cambio ni un campo nuevo. Login y reset se serializan sobre el usuario; en reintentos se revalida la contraseña si cambió el hash observado. Se conservan los logins simultáneos válidos. Esto añade un hash Argon2id por login correcto y posibles verificaciones en conflictos; dimensionar CPU y conservar cuotas. Los JWT de acceso previamente emitidos pueden seguir válidos hasta expirar (máximo 15 minutos); no se introduce blacklist ni se afirma revocación inmediata.
+
+### Configuración operativa y pruebas
+
+Sin modificar `.env`, se añaden opciones con valores predeterminados: `PASSWORD_RECOVERY_TTL_SECONDS=900` (60–900, múltiplo de 60), `RATE_LIMIT_PASSWORD_FORGOT_MAX=10` y `RATE_LIMIT_PASSWORD_RESET_MAX=10`, cada una con `*_WINDOW_SECONDS=600`; `RATE_LIMIT_PASSWORD_ACCOUNT_MAX=3`, `RATE_LIMIT_PASSWORD_ACCOUNT_WINDOW_SECONDS=3600`. Las ventanas nuevas no superan 3600 segundos. Son cuotas separadas; no se cambian las anteriores ni se reduce la cuarentena Redis. Las claves de cuenta contienen un HMAC de la dirección normalizada, nunca el correo en claro. Deben acordarse los valores de producción y monitorizar los fallos genéricos y saturación sin datos sensibles.
+
+Pruebas específicas: `test/password-recovery.spec.ts`, `test/password-recovery.integration.spec.ts`, `test/login.integration.spec.ts`, `test/smtp-verification.spec.ts`. Integración SMTP real local: `node scripts/mailpit.cjs test`; suite completa: `node scripts/mailpit.cjs suite` (invoca `npm test -- --detectOpenHandles`). Se reutilizan MongoDB UUID, propiedad estricta de limpieza, namespace Redis exclusivo y Mailpit independiente, únicamente con `example.test`. Ninguna prueba utiliza correo real ni borra claves compartidas.
+
+Archivos de este incremento:
+
+| Responsabilidad | Archivos |
+|---|---|
+| Recuperación y DTO (nuevos) | [servicio](src/modules/identity/application/password-recovery.service.ts), [DTOs](src/modules/identity/presentation/dto/password-recovery.dto.ts) |
+| HTTP y arranque | [controlador](src/modules/auth/auth.controller.ts), [guard](src/modules/auth/auth-http.guard.ts), [política](src/modules/auth/auth-http.policy.ts), [errores](src/modules/auth/auth-http.errors.ts), [Swagger](src/configure-app.ts), [shutdown](src/main.ts) |
+| Identidad y seguridad | [módulo](src/modules/identity/identity.module.ts), [fachada](src/modules/identity/application/identity-operations.service.ts), [login](src/modules/identity/application/login.service.ts), [tokens opacos](src/infrastructure/security/opaque-token.service.ts) |
+| Correo | [contrato](src/modules/identity/application/verification-mailer.ts), [SMTP](src/modules/identity/infrastructure/smtp-verification-mailer.ts), [desarrollo](src/modules/identity/infrastructure/development-verification-mailer.ts), [pruebas](src/modules/identity/infrastructure/test-verification-mailer.ts) |
+| Configuración y límites | [entorno](src/config/environment.ts), [Redis](src/infrastructure/rate-limit/origin-rate-limit.service.ts) |
+| Pruebas nuevas y ampliadas | [contratos](test/password-recovery.spec.ts), [integración](test/password-recovery.integration.spec.ts), [SMTP](test/smtp-verification.spec.ts), [Mailpit](test/mailpit.integration.spec.ts) |
+| Documentación | Este README y `docs/arquitectura.md` local, ignorado por Git. |
+
+Validación final 3F (2026-11-21): build y lint aprobados. Pruebas específicas ampliadas: 67/67 en 5 suites (37.339 s). SMTP/Mailpit y regresiones del transporte: 53/53 en 4 suites (34.768 s). Única suite completa final `npm test -- --detectOpenHandles`: **295/295 pruebas en 28 suites**, 0 fallidas, 0 omitidas, 150.178 s; sin advertencias de recursos abiertos. Limpieza comprobada: 0 bases UUID temporales, 0 contenedores Mailpit, 0 directorios de certificados y redes temporales eliminadas. Redis conserva expiración en namespaces exclusivos de prueba; no se usa FLUSH ni se borran cuotas compartidas. `git diff --check` aprobado, rama `feat/auth-login-sessions` conservada y documentación local ignorada. No hubo escrituras de Git ni cambios privados/datos reales/volúmenes/módulos educativos. Calidad del incremento: 8.5/10; límites de durabilidad, JWT y coste Argon2id documentados, sin fallos críticos identificados ni avance de fase.
+
 ## Fase 3E: guards y autorización
 
 `AccessControlModule` instala globalmente `JwtAuthGuard` y después `RolesGuard`: las rutas de controladores Nest son privadas por defecto. `@Public()` mantiene públicas las rutas existentes de `auth` y `health`; no desactiva `AuthHttpGuard`, las cuotas Redis, las comprobaciones operativas ni las restricciones de Origin de login/refresh/logout. Swagger continúa disponible en `/docs` conforme a su configuración anterior. `@Public(false)` permite proteger un método dentro de un controlador público.
