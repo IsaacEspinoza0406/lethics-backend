@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import { createClient } from 'redis';
 import { inspectRedisReadiness } from './redis-readiness';
 
-export type LimitedOperation = 'register' | 'verify' | 'resend';
+export type LimitedOperation = 'register' | 'verify' | 'resend' | 'login' | 'refresh' | 'logout' | 'forgot' | 'reset';
 export class RateLimitUnavailableError extends Error { constructor() { super('Control de solicitudes no disponible'); } }
 
 /** Only the direct socket address is accepted. Proxy deployments must remain blocked. */
@@ -54,15 +54,26 @@ export class OriginRateLimitService implements OnApplicationShutdown {
   }
 
   async consume(operation: LimitedOperation, socketAddress: string | undefined, behindProxy: boolean): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+    return this.consumeScoped(operation, socketAddress, behindProxy);
+  }
+
+  async consumeAccount(correo: string): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+    return this.consumeScoped('forgot', correo, false, true);
+  }
+
+  private async consumeScoped(operation: LimitedOperation, socketAddress: string | undefined, behindProxy: boolean, account = false): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
     try {
-      if (!['register', 'verify', 'resend'].includes(operation)) throw new Error('invalid operation');
+      if (!['register', 'verify', 'resend', 'login', 'refresh', 'logout', 'forgot', 'reset'].includes(operation)) throw new Error('invalid operation');
       if (typeof behindProxy !== 'boolean') throw new RateLimitUnavailableError();
-      const origin = resolveDirectOrigin(socketAddress, behindProxy);
+      if (account && (!socketAddress || socketAddress !== socketAddress.trim().toLowerCase() || socketAddress.length > 254)) throw new RateLimitUnavailableError();
+      const origin = account ? `account:${socketAddress}` : resolveDirectOrigin(socketAddress, behindProxy);
       const client = await this.getClient();
-      const caps = { register: 'REGISTER', verify: 'VERIFY', resend: 'RESEND' } as const;
-      const window = this.config.getOrThrow<number>(`RATE_LIMIT_${caps[operation]}_WINDOW_SECONDS`);
-      const max = this.config.getOrThrow<number>(`RATE_LIMIT_${caps[operation]}_MAX`);
-      const maxWindow = Math.max(...Object.values(caps).map((v) => this.config.getOrThrow<number>(`RATE_LIMIT_${v}_WINDOW_SECONDS`)));
+      const caps = { register: 'REGISTER', verify: 'VERIFY', resend: 'RESEND', login: 'LOGIN', refresh: 'REFRESH', logout: 'LOGOUT', forgot: 'PASSWORD_FORGOT', reset: 'PASSWORD_RESET' } as const;
+      const sessionOperation = ['login', 'refresh', 'logout', 'forgot', 'reset'].includes(operation);
+      const key = account ? 'PASSWORD_ACCOUNT' : caps[operation];
+      const window = this.config.get<number>(`RATE_LIMIT_${key}_WINDOW_SECONDS`, account ? 3600 : sessionOperation ? 600 : 0);
+      const max = this.config.get<number>(`RATE_LIMIT_${key}_MAX`, account ? 3 : ['login', 'forgot', 'reset'].includes(operation) ? 10 : sessionOperation ? 30 : 0);
+      const maxWindow = Math.max(this.config.get<number>('RATE_LIMIT_PASSWORD_ACCOUNT_WINDOW_SECONDS', 3600), ...Object.values(caps).map((v) => this.config.get<number>(`RATE_LIMIT_${v}_WINDOW_SECONDS`, sessionOperation && v === caps[operation] ? 600 : 0)));
       const before = await client.info('server');
       const persistence = await client.info('persistence');
       const replication = await client.info('replication');
@@ -71,7 +82,7 @@ export class OriginRateLimitService implements OnApplicationShutdown {
       const runId = readiness.runId;
       if (!readiness.ready || !Number.isSafeInteger(max) || max < 1 || !Number.isSafeInteger(window) || window < 1) throw new Error('untrusted state');
       const digest = createHmac('sha256', Buffer.from(this.config.getOrThrow<string>('RATE_LIMIT_HMAC_KEY_BASE64'), 'base64')).update(origin).digest('hex');
-      const name = `lethics:limit:${this.config.getOrThrow<string>('RATE_LIMIT_NAMESPACE')}:${operation}:${digest}`;
+      const name = `lethics:limit:${this.config.getOrThrow<string>('RATE_LIMIT_NAMESPACE')}:${operation}${account ? '_account' : ''}:${digest}`;
       const result = await client.eval(SCRIPT, { keys: [name], arguments: [String(window)] });
       const after = await client.info('server');
       if (!new RegExp(`^run_id:${runId}\\r?$`, 'm').test(after) || !Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'number') throw new Error('invalid state');

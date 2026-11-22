@@ -3,9 +3,11 @@ import { InjectConnection } from '@nestjs/mongoose';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Connection } from 'mongoose';
 import { MongoDbUnavailableException } from '../../common/mongodb-unavailable.exception';
+import { Public } from '../auth/access-control';
 
 @ApiTags('health')
 @Controller('health')
+@Public()
 export class HealthController {
   constructor(@InjectConnection() private readonly connection: Connection) {}
 

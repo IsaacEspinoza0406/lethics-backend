@@ -41,12 +41,22 @@ export class SmtpVerificationMailer implements VerificationMailer, OnApplication
   }
 
   async sendVerification(recipient: string, code: string): Promise<void> {
+    if (!/^[0-9]{6}$/.test(code)) throw new VerificationDeliveryError();
+    return this.deliver(recipient, 'Verificación de correo — Lethics', `Tu código de verificación es ${code}. Vence en cinco minutos. Si no solicitaste este código, ignora este mensaje.`);
+  }
+
+  async sendPasswordRecovery(recipient: string, token: string, expiresInMinutes: number): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token) || Buffer.from(token, 'base64url').toString('base64url') !== token || !Number.isSafeInteger(expiresInMinutes) || expiresInMinutes < 1 || expiresInMinutes > 15) throw new VerificationDeliveryError();
+    return this.deliver(recipient, 'Recuperación de contraseña — Lethics', `Tu token de recuperación es ${token}. Vence en ${expiresInMinutes} minutos. Si no solicitaste este cambio, ignora este mensaje. Nunca compartas este token.`);
+  }
+
+  private async deliver(recipient: string, subject: string, text: string): Promise<void> {
     try {
-      if (!isEmail(recipient) || /[\r\n]/.test(recipient) || !/^[0-9]{6}$/.test(code)) throw new Error('Mensaje inválido');
+      if (!isEmail(recipient) || /[\r\n]/.test(recipient)) throw new Error('Mensaje inválido');
       // Stable within this invocation only. Message-ID does not provide SMTP deduplication.
       const message: SendMailOptions = { from: this.from, to: recipient, date: new Date(),
         messageId: `<${randomUUID()}@${this.from.split('@')[1]}>`,
-        subject: 'Verificación de correo — Lethics', text: `Tu código de verificación es ${code}. Vence en cinco minutos. Si no solicitaste este código, ignora este mensaje.` };
+        subject, text };
       const started = performance.now();
       for (let attempt = 1; attempt <= smtpDeliveryPolicy.maxAttempts; attempt++) {
         if (this.stopped) throw new VerificationDeliveryError();

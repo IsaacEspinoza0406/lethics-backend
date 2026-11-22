@@ -4,7 +4,23 @@ export const environmentSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
   PORT: Joi.number().port().default(3000),
   AUTH_HTTP_ENABLED: Joi.boolean().default(false),
+  PASSWORD_RECOVERY_TTL_SECONDS: Joi.number().integer().min(60).max(900).multiple(60).default(900),
+  RATE_LIMIT_PASSWORD_FORGOT_MAX: Joi.number().integer().min(1).default(10),
+  RATE_LIMIT_PASSWORD_FORGOT_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(600),
+  RATE_LIMIT_PASSWORD_RESET_MAX: Joi.number().integer().min(1).default(10),
+  RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(600),
+  RATE_LIMIT_PASSWORD_ACCOUNT_MAX: Joi.number().integer().min(1).default(3),
+  RATE_LIMIT_PASSWORD_ACCOUNT_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(3600),
   AUTH_BEHIND_PROXY: Joi.boolean().default(false),
+  AUTH_REFRESH_TTL_SECONDS: Joi.number().integer().min(1).max(604800).default(604800),
+  AUTH_REFRESH_COOKIE_SECURE: Joi.when('NODE_ENV', { is: 'production', then: Joi.boolean().valid(true).default(true), otherwise: Joi.boolean().default(false) }),
+  AUTH_BROWSER_ORIGIN: Joi.string().custom((value: string, helpers) => {
+    try {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin !== value || (helpers.state.ancestors[0].NODE_ENV === 'production' && url.protocol !== 'https:')) return helpers.error('any.invalid');
+      return value;
+    } catch { return helpers.error('any.invalid'); }
+  }),
   VERIFICATION_MAIL_TRANSPORT: Joi.string().valid('disabled', 'smtp').default('disabled'),
   SMTP_HOST: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.string().hostname().required(), otherwise: Joi.string().optional() }),
   SMTP_PORT: Joi.when('VERIFICATION_MAIL_TRANSPORT', { is: 'smtp', then: Joi.number().integer().min(1).max(65535).required(), otherwise: Joi.number().optional() }),
@@ -22,7 +38,7 @@ export const environmentSchema = Joi.object({
   }).messages({ 'any.invalid': 'JWT_ACCESS_SECRET_BASE64 debe contener 32 bytes aleatorios codificados en base64' }),
   JWT_ACCESS_ISSUER: Joi.string().trim().required(),
   JWT_ACCESS_AUDIENCE: Joi.string().trim().required(),
-  JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(1).required(),
+  JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(1).max(900).required(),
   VERIFICATION_CODE_HMAC_KEY_BASE64: Joi.string().required().custom((value: string, helpers) => {
     const bytes = Buffer.from(value, 'base64');
     if (bytes.length !== 32 || bytes.toString('base64') !== value || new Set(bytes).size < 16 || value === helpers.state.ancestors[0].JWT_ACCESS_SECRET_BASE64) return helpers.error('any.invalid');
@@ -49,4 +65,10 @@ export const environmentSchema = Joi.object({
   RATE_LIMIT_REGISTER_WINDOW_SECONDS: Joi.number().integer().min(1).max(86400).default(3600),
   RATE_LIMIT_RESEND_MAX: Joi.number().integer().min(1).default(20),
   RATE_LIMIT_RESEND_WINDOW_SECONDS: Joi.number().integer().min(1).max(86400).default(3600),
+  RATE_LIMIT_LOGIN_MAX: Joi.number().integer().min(1).default(10),
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(600),
+  RATE_LIMIT_REFRESH_MAX: Joi.number().integer().min(1).default(30),
+  RATE_LIMIT_REFRESH_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(600),
+  RATE_LIMIT_LOGOUT_MAX: Joi.number().integer().min(1).default(30),
+  RATE_LIMIT_LOGOUT_WINDOW_SECONDS: Joi.number().integer().min(1).max(3600).default(600),
 }).unknown(true);

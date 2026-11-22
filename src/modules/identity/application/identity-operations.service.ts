@@ -1,14 +1,28 @@
 import { LimitedOperation, OriginRateLimitService, RateLimitUnavailableError } from '../../../infrastructure/rate-limit/origin-rate-limit.service';
 import { RegistrationService } from './registration.service';
 import { ResendVerificationService } from './resend-verification.service';
+import { LoginService, LoginResult } from './login.service';
 import { VerifyEmailService } from './verify-email.service';
+import { SessionService } from './session.service';
+import { PasswordRecoveryService } from './password-recovery.service';
 
 export class OriginQuotaExceededError extends Error { constructor() { super('Límite de solicitudes alcanzado'); } }
 
 /** Internal boundary; origin and proxy mode must come from trusted server configuration. */
 export class IdentityOperationsService {
   private readonly permits = new WeakMap<object, { operation: LimitedOperation; origin: string | undefined; behindProxy: boolean }>();
-  constructor(private readonly limiter: OriginRateLimitService, private readonly registration: RegistrationService, private readonly verification: VerifyEmailService, private readonly resendService: ResendVerificationService) {}
+  constructor(private readonly limiter: OriginRateLimitService, private readonly registration: RegistrationService, private readonly verification: VerifyEmailService, private readonly resendService: ResendVerificationService, private readonly loginService?: LoginService, private readonly sessionService?: SessionService, private readonly recovery?: PasswordRecoveryService) {}
+
+  async forgot(origin: string | undefined, behindProxy: boolean, correo: string, permit?: object): Promise<void> {
+    await this.allow('forgot', origin, behindProxy, permit);
+    if (!this.recovery) throw new Error('Recuperación no disponible');
+    await this.recovery.forgot(correo);
+  }
+  async resetPassword(origin: string | undefined, behindProxy: boolean, token: string, password: string, permit?: object): Promise<void> {
+    await this.allow('reset', origin, behindProxy, permit);
+    if (!this.recovery) throw new Error('Recuperación no disponible');
+    await this.recovery.reset(token, password);
+  }
 
   private async allow(operation: LimitedOperation, origin: string | undefined, behindProxy: boolean, permit?: object): Promise<void> {
     if (permit) {
@@ -37,5 +51,20 @@ export class IdentityOperationsService {
   async resend(origin: string | undefined, behindProxy: boolean, correo: string, permit?: object): Promise<void> {
     await this.allow('resend', origin, behindProxy, permit);
     await this.resendService.resend(correo);
+  }
+  async login(origin: string | undefined, behindProxy: boolean, input: { correo: string; contraseña: string }, permit?: object): Promise<LoginResult> {
+    await this.allow('login', origin, behindProxy, permit);
+    if (!this.loginService) throw new Error('Login no disponible');
+    return this.loginService.login(input);
+  }
+  async refresh(origin: string | undefined, behindProxy: boolean, token: string | undefined, permit?: object): Promise<LoginResult> {
+    await this.allow('refresh', origin, behindProxy, permit);
+    if (!this.sessionService) throw new Error('Sesiones no disponibles');
+    return this.sessionService.refresh(token);
+  }
+  async logout(origin: string | undefined, behindProxy: boolean, token: string | undefined, permit?: object): Promise<void> {
+    await this.allow('logout', origin, behindProxy, permit);
+    if (!this.sessionService) throw new Error('Sesiones no disponibles');
+    await this.sessionService.logout(token);
   }
 }

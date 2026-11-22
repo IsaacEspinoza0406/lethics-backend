@@ -1,4 +1,6 @@
-import { BadRequestException, Body, Controller, HttpCode, HttpStatus, Logger, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, HttpCode, HttpStatus, Logger, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Response } from 'express';
 import { ApiAcceptedResponse, ApiBadRequestResponse, ApiOkResponse, ApiOperation, ApiProperty, ApiResponse, ApiServiceUnavailableResponse, ApiTags } from '@nestjs/swagger';
 import { IdentityOperationsService } from '../identity/application/identity-operations.service';
 import { VerificationDeliveryError, VerificationStateUnavailableError } from '../identity/application/verification-mailer';
@@ -7,10 +9,22 @@ import { VerifyEmailDto } from '../identity/presentation/dto/verify-email.dto';
 import { ResendVerificationDto } from '../identity/presentation/dto/resend-verification.dto';
 import { AuthHttpGuard, AuthOperation, AuthRequest, AUTH_ORIGIN_PERMIT } from './auth-http.guard';
 import { authHttpFailure } from './auth-http.errors';
+import { LoginDto } from '../identity/presentation/dto/login.dto';
+import { readRefreshCookie, refreshCookieOptions } from './login-http.policy';
+import { LoginResult } from '../identity/application/login.service';
+import { SessionDeniedError } from '../identity/application/session.service';
+import { Public } from './access-control';
+import { ForgotPasswordDto, ResetPasswordDto } from '../identity/presentation/dto/password-recovery.dto';
 
 export class AuthMessageDto {
   @ApiProperty({ example: 'Solicitud recibida.' })
   message!: string;
+}
+
+export class LoginResponseDto {
+  @ApiProperty({ description: 'JWT de acceso; mantener en memoria del cliente.' }) accessToken!: string;
+  @ApiProperty({ example: 'Bearer' }) tokenType!: string;
+  @ApiProperty({ example: 900 }) expiresIn!: number;
 }
 
 @ApiTags('auth')
@@ -18,10 +32,86 @@ export class AuthMessageDto {
 @ApiResponse({ status: 429, description: 'Cuota por origen excedida.' })
 @ApiServiceUnavailableResponse({ description: 'Operación deshabilitada o una protección/dependencia obligatoria no está disponible.' })
 @Controller('auth')
+@Public()
 @UseGuards(AuthHttpGuard)
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
-  constructor(private readonly operations: IdentityOperationsService) {}
+  constructor(private readonly operations: IdentityOperationsService, private readonly config: ConfigService) {}
+
+  @Post('password/forgot')
+  @AuthOperation('forgot')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Solicitar recuperación; respuesta uniforme sin confirmar cuenta ni entrega.' })
+  @ApiAcceptedResponse({ type: AuthMessageDto })
+  async forgot(@Body() input: ForgotPasswordDto, @Req() request: AuthRequest): Promise<AuthMessageDto> {
+    try { await this.operations.forgot(request.socket.remoteAddress, false, input.correo, request[AUTH_ORIGIN_PERMIT]); }
+    catch (error) { throw authHttpFailure(error); }
+    return { message: 'Si la cuenta es elegible, recibirás instrucciones de recuperación.' };
+  }
+
+  @Post('password/reset')
+  @AuthOperation('reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Restablecer contraseña con token de un solo uso y revocar sesiones.' })
+  @ApiOkResponse({ type: AuthMessageDto })
+  async resetPassword(@Body() input: ResetPasswordDto, @Req() request: AuthRequest): Promise<AuthMessageDto> {
+    try { await this.operations.resetPassword(request.socket.remoteAddress, false, input.token, input.nuevaContraseña, request[AUTH_ORIGIN_PERMIT]); }
+    catch (error) { throw authHttpFailure(error); }
+    return { message: 'Contraseña restablecida.' };
+  }
+
+  private sessionResponse(result: LoginResult, response: Response): LoginResponseDto {
+    response.setHeader('Cache-Control', 'no-store'); response.setHeader('Pragma', 'no-cache');
+    response.cookie('lethics_refresh', result.refreshToken, { ...refreshCookieOptions(this.config), expires: result.refreshExpiresAt, maxAge: Math.max(0, result.refreshExpiresAt.getTime() - Date.now()) });
+    return { accessToken: result.accessToken, tokenType: 'Bearer', expiresIn: result.expiresIn };
+  }
+
+  @Post('refresh')
+  @AuthOperation('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rotar refresh de un solo uso y renovar acceso', description: 'Exige cookie y Origin autorizado; body JSON vacío. Reutilización de un token revocado invalida su familia.' })
+  @ApiOkResponse({ type: LoginResponseDto, description: 'Nueva cookie HttpOnly y access token; no extiende la expiración absoluta de la familia.' })
+  @ApiResponse({ status: 401, description: 'Sesión no válida; se elimina cookie.' })
+  @ApiResponse({ status: 403, description: 'Origin obligatorio, exacto y sin cross-site.' })
+  async refresh(@Req() request: AuthRequest, @Res({ passthrough: true }) response: Response): Promise<LoginResponseDto> {
+    try {
+      const result = await this.operations.refresh(request.socket.remoteAddress, false, readRefreshCookie(request), request[AUTH_ORIGIN_PERMIT]);
+      return this.sessionResponse(result, response);
+    } catch (error) {
+      if (error instanceof SessionDeniedError) response.clearCookie('lethics_refresh', refreshCookieOptions(this.config));
+      throw authHttpFailure(error);
+    }
+  }
+
+  @Post('logout')
+  @AuthOperation('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Revocar sesión lógica y eliminar cookie', description: 'Idempotente para cookie ausente, desconocida, expirada o ya revocada. No revoca familias independientes.' })
+  @ApiResponse({ status: 204, description: 'Revocación confirmada de la sesión identificada, si existe; cookie eliminada.' })
+  @ApiResponse({ status: 403, description: 'Origin obligatorio, exacto y sin cross-site.' })
+  async logout(@Req() request: AuthRequest, @Res({ passthrough: true }) response: Response): Promise<void> {
+    try {
+      await this.operations.logout(request.socket.remoteAddress, false, readRefreshCookie(request), request[AUTH_ORIGIN_PERMIT]);
+      response.setHeader('Cache-Control', 'no-store'); response.setHeader('Pragma', 'no-cache');
+      response.clearCookie('lethics_refresh', refreshCookieOptions(this.config));
+    } catch (error) { throw authHttpFailure(error); }
+  }
+
+  @Post('login')
+  @AuthOperation('login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Iniciar sesión con una cuenta verificada' })
+  @ApiOkResponse({ type: LoginResponseDto, description: 'JWT de acceso y cookie lethics_refresh HttpOnly, SameSite=Strict, Secure en producción. No devuelve refresh en JSON.' })
+  @ApiResponse({ status: 401, description: 'Credenciales no válidas.' })
+  @ApiResponse({ status: 403, description: 'Origen de navegador no autorizado.' })
+  @ApiResponse({ status: 415, description: 'Login exige application/json.' })
+  async login(@Body() input: LoginDto, @Req() request: AuthRequest, @Res({ passthrough: true }) response: Response): Promise<LoginResponseDto> {
+    try {
+      refreshCookieOptions(this.config);
+      const result = await this.operations.login(request.socket.remoteAddress, false, input, request[AUTH_ORIGIN_PERMIT]);
+      return this.sessionResponse(result, response);
+    } catch (error) { throw authHttpFailure(error); }
+  }
 
   private async command(operation: 'register' | 'resend', run: () => Promise<void>): Promise<AuthMessageDto> {
     try { await run(); }

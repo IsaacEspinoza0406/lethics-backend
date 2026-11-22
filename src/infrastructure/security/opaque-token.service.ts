@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export type TokenPurpose = 'account' | 'refresh';
-const PURPOSES: readonly string[] = ['account', 'refresh'];
+export type TokenPurpose = 'account' | 'refresh' | 'password-reset';
+const PURPOSES: readonly string[] = ['account', 'refresh', 'password-reset'];
 
 @Injectable()
 export class OpaqueTokenService {

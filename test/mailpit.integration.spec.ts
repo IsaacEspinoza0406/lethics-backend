@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { configureApp } from '../src/configure-app';
 import { AuthHttpModule } from '../src/modules/auth/auth-http.module';
+import { UsersModule } from '../src/modules/users/users.module';
 import { VERIFICATION_MAILER, VerificationDeliveryError } from '../src/modules/identity/application/verification-mailer';
 import { verificationMailerFromConfig } from '../src/modules/identity/infrastructure/verification-mailer.factory';
 import { SmtpVerificationMailer } from '../src/modules/identity/infrastructure/smtp-verification-mailer';
@@ -14,6 +15,9 @@ import { installIdentityIndexes } from '../src/modules/identity/infrastructure/i
 import { TokenCuenta, Usuario } from '../src/modules/identity/infrastructure/schemas/identity.schemas';
 import { createMongoTestScope, createRedisTestTarget } from './integration-isolation';
 import { createFaultSmtpServer } from './smtp-fault-server';
+import { PasswordService } from '../src/infrastructure/security/password.service';
+import { OpaqueTokenService } from '../src/infrastructure/security/opaque-token.service';
+import { PasswordRecoveryService } from '../src/modules/identity/application/password-recovery.service';
 
 // Opt-in only. All other tests retain the default simulated factory for NODE_ENV=test.
 const api = process.env.LETHICS_MAILPIT_API_URL;
@@ -35,6 +39,7 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
   const spies: jest.SpyInstance[] = [];
   const settings = {
     NODE_ENV: 'test', AUTH_HTTP_ENABLED: true, AUTH_BEHIND_PROXY: false,
+    AUTH_REFRESH_TTL_SECONDS: 604800, AUTH_REFRESH_COOKIE_SECURE: false, AUTH_BROWSER_ORIGIN: 'http://localhost:3000',
     JWT_ACCESS_SECRET_BASE64: randomBytes(32).toString('base64'), JWT_ACCESS_ISSUER: 'mailpit-test', JWT_ACCESS_AUDIENCE: 'mailpit-test', JWT_ACCESS_TTL_SECONDS: 900,
     VERIFICATION_CODE_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), RATE_LIMIT_HMAC_KEY_BASE64: randomBytes(32).toString('base64'),
     REDIS_URL: redis?.uri, RATE_LIMIT_NAMESPACE: redis?.namespace,
@@ -67,10 +72,10 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
     for (const level of ['log', 'error', 'warn', 'debug', 'verbose'] as const) spies.push(jest.spyOn(Logger.prototype, level).mockImplementation((...values: unknown[]) => { logs.push(values.map(String).join(' ')); }));
     const temporary = await scope!.open();
     connection = mongoose.createConnection().setClient(temporary.client);
-    await temporary.db.createCollection('usuarios'); await temporary.db.createCollection('tokens_cuenta');
+    await temporary.db.createCollection('usuarios'); await temporary.db.createCollection('tokens_cuenta'); await temporary.db.createCollection('sesiones');
     await installIdentityIndexes(temporary.db, `INSTALL INDEXES ${scope!.dbName}`);
     const module = await Test.createTestingModule({ imports: [TemporaryConnectionModule,
-      ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => settings] }), AuthHttpModule,
+      ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => settings] }), AuthHttpModule, UsersModule,
     ] }).overrideProvider(VERIFICATION_MAILER).useFactory({ factory: () => verificationMailerFromConfig(new ConfigService({ ...settings, NODE_ENV: 'development' })) }).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
   }, 20000);
@@ -119,6 +124,70 @@ interface MailpitMessage { ID: string; To: Array<{ Address: string }>; Subject: 
       expect(logs.join('\n')).not.toContain(secret);
       expect(result.text + verified.text).not.toContain(secret);
     }
+  }, 25000);
+
+  it('recuperación completa: correo SMTP real a Mailpit, cambio de contraseña y sesiones revocadas', async () => {
+    const correo = `recovery-${randomUUID()}@example.test`, oldPassword = `old-${randomUUID()}`, nextPassword = `new-${randomUUID()}`;
+    const user = await connection.db!.collection('usuarios').insertOne({ nombre: 'Recuperación sintética', correo, rol: 'estudiante', verificadoEn: new Date(), contraseñaHash: await app.get(PasswordService).hash(oldPassword) });
+    const login = await request(app.getHttpServer()).post('/api/v1/auth/login').send({ correo, contraseña: oldPassword }).expect(200);
+    const response = await request(app.getHttpServer()).post('/api/v1/auth/password/forgot').send({ correo }).expect(202);
+    await app.get(PasswordRecoveryService).waitForPendingRequests();
+    const messages = await received(correo); expect(messages).toHaveLength(1);
+    expect(messages[0].Subject).toBe('Recuperación de contraseña — Lethics'); expect(messages[0].To.map((to) => to.Address)).toEqual([correo]);
+    const token = /Tu token de recuperación es ([A-Za-z0-9_-]{43})\./.exec(messages[0].Text)![1]; expect(messages[0].Text).toContain('Vence en 15 minutos.');
+    const tokenHash = app.get(OpaqueTokenService).digest('password-reset', token);
+    const stored = (await connection.db!.collection('tokens_cuenta').findOne({ usuarioId: user.insertedId, tipo: 'recuperacion' }))!;
+    expect(stored.tokenHash).toBe(tokenHash); expect(JSON.stringify(stored)).not.toContain(token);
+    const reset = await request(app.getHttpServer()).post('/api/v1/auth/password/reset').send({ token, nuevaContraseña: nextPassword }).expect(200);
+    await request(app.getHttpServer()).post('/api/v1/auth/password/reset').send({ token, nuevaContraseña: nextPassword }).expect(400);
+    await request(app.getHttpServer()).post('/api/v1/auth/login').send({ correo, contraseña: oldPassword }).expect(401);
+    await request(app.getHttpServer()).post('/api/v1/auth/login').send({ correo, contraseña: nextPassword }).expect(200);
+    await request(app.getHttpServer()).post('/api/v1/auth/refresh').set('Origin', settings.AUTH_BROWSER_ORIGIN).set('Cookie', login.headers['set-cookie'][0].split(';')[0]).send({}).expect(401);
+    for (const secret of [token, tokenHash, oldPassword, nextPassword, settings.SMTP_PASSWORD]) expect(response.text + reset.text + logs.join('\n')).not.toContain(secret);
+  }, 25000);
+
+  it('recorrido completo de una cuenta: registro → verificación → login → perfil → refresh → logout → recuperación → reset → nuevo login', async () => {
+    const correo = `journey-${randomUUID()}@example.test`, password = `old-${randomUUID()}`, newPassword = `new-${randomUUID()}`;
+    const call = (path: string, body: object) => request(app.getHttpServer()).post(`/api/v1/auth/${path}`).send(body);
+    const pair = (response: request.Response): string => response.headers['set-cookie'][0].split(';')[0];
+    const command = (path: string, cookie: string) => request(app.getHttpServer()).post(`/api/v1/auth/${path}`).set('Origin', settings.AUTH_BROWSER_ORIGIN).set('Cookie', cookie).send({});
+    const responses: request.Response[] = [];
+    responses.push(await call('register', { nombre: 'Recorrido sintético', correo, contraseña: password }).expect(202));
+    await call('login', { correo, contraseña: password }).expect(401);
+    const verification = (await received(correo)).find((message) => message.Subject === 'Verificación de correo — Lethics')!;
+    const verificationCode = code(verification);
+    responses.push(await call('verify', { correo, codigo: verificationCode }).expect(200));
+    const login = await call('login', { correo, contraseña: password }).expect(200); responses.push(login);
+    const me = await request(app.getHttpServer()).get('/api/v1/users/me').auth(login.body.accessToken, { type: 'bearer' }).expect(200); responses.push(me);
+    expect(me.body).toEqual({ id: expect.any(String), nombre: 'Recorrido sintético', correo, rol: 'estudiante' });
+    const refreshed = await command('refresh', pair(login)).expect(200); responses.push(refreshed);
+    expect(pair(refreshed)).not.toBe(pair(login)); expect(refreshed.body.accessToken).not.toBe(login.body.accessToken);
+    const loggedOut = await command('logout', pair(refreshed)).expect(204); responses.push(loggedOut);
+    expect(loggedOut.headers['set-cookie'][0]).toContain('Expires=Thu, 01 Jan 1970');
+    await command('refresh', pair(refreshed)).expect(401);
+    // Actual guarantee: logout revokes refresh, not a still-valid access JWT.
+    await request(app.getHttpServer()).get('/api/v1/users/me').auth(refreshed.body.accessToken, { type: 'bearer' }).expect(200);
+    responses.push(await call('password/forgot', { correo }).expect(202));
+    await app.get(PasswordRecoveryService).waitForPendingRequests();
+    const recovery = (await received(correo)).find((message) => message.Subject === 'Recuperación de contraseña — Lethics')!;
+    expect(recovery.To.map((recipient) => recipient.Address)).toEqual([correo]);
+    const token = /Tu token de recuperación es ([A-Za-z0-9_-]{43})\./.exec(recovery.Text)![1];
+    responses.push(await call('password/reset', { token, nuevaContraseña: newPassword }).expect(200));
+    await call('password/reset', { token, nuevaContraseña: newPassword }).expect(400);
+    await call('login', { correo, contraseña: password }).expect(401);
+    const next = await call('login', { correo, contraseña: newPassword }).expect(200); responses.push(next);
+    const nextProfile = await request(app.getHttpServer()).get('/api/v1/users/me').auth(next.body.accessToken, { type: 'bearer' }).expect(200);
+    expect(nextProfile.body).toEqual(me.body);
+    for (const response of [login, refreshed, next]) {
+      expect(Object.keys(response.body).sort()).toEqual(['accessToken', 'expiresIn', 'tokenType']);
+      expect(response.headers['set-cookie'][0]).toContain('HttpOnly'); expect(response.headers['set-cookie'][0]).toContain('SameSite=Strict');
+      expect(response.headers['cache-control']).toBe('no-store');
+    }
+    const publicResponses = responses.map((response) => response.text).join('\n');
+    for (const secret of [password, newPassword, verificationCode, token]) expect(publicResponses + logs.join('\n')).not.toContain(secret);
+    for (const response of [login, refreshed, next]) expect(logs.join('\n')).not.toContain(response.body.accessToken);
+    const user = await connection.model<Usuario>('Usuario').findOne({ correo }).select('+contraseñaHash');
+    expect(user!.contraseñaHash).toMatch(/^\$argon2id\$/); expect(publicResponses + logs.join('\n')).not.toContain(user!.contraseñaHash);
   }, 25000);
 
   it('rechaza autenticación SMTP incorrecta sin exponer detalles ni aceptar entrega', async () => {
