@@ -20,13 +20,14 @@ El backend y el frontend se desarrollan en repositorios separados. La API está 
 - Autenticación de rutas privadas, autorización por rol y consulta del perfil propio.
 - Consulta segura de cuestionarios, calificación en el servidor e historial privado con envíos idempotentes.
 - Examen final con elegibilidad verificada por contratos de integración y un máximo de tres intentos por estudiante y curso, compartidos entre versiones.
+- Registro de evidencias del proyecto, historial privado e idempotencia, sujetos a la política autorizada del curso y a validación confiable de archivos.
 - Envío SMTP, limitación de solicitudes con Redis y comprobaciones operativas.
 - Endpoint de salud y documentación interactiva con Swagger.
 
 **Previstas**
 
 - Consulta y organización de cursos, módulos, lecciones y flashcards.
-- Integración del examen final con progreso y entregas de proyectos, además de las actividades educativas.
+- Integración con cursos y progreso, almacenamiento externo de archivos y actividades educativas.
 - Seguimiento del progreso y resultados del estudiante.
 
 Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints en la estructura actual del repositorio.
@@ -43,9 +44,9 @@ Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints e
 
 ## Arquitectura
 
-El backend se organiza en módulos de autenticación HTTP, identidad, usuarios, evaluaciones y salud. Los casos de uso se separan de los controladores y de la persistencia; seguridad y limitación de solicitudes son componentes compartidos.
+El backend se organiza en módulos de autenticación HTTP, identidad, usuarios, evaluaciones, proyectos y salud. Los casos de uso se separan de los controladores y de la persistencia; seguridad y limitación de solicitudes son componentes compartidos.
 
-MongoDB almacena usuarios, tokens de cuenta, sesiones, evaluaciones e intentos. Redis mantiene las cuotas de autenticación. El frontend consume la API REST y no accede directamente a estas bases de datos.
+MongoDB almacena usuarios, tokens de cuenta, sesiones, evaluaciones, intentos y metadatos de entregas. Los archivos binarios se mantienen fuera de MongoDB. Redis mantiene las cuotas de autenticación. El frontend consume la API REST y no accede directamente a estas bases de datos.
 
 La estructura principal se encuentra en [src/modules](src/modules), [src/infrastructure](src/infrastructure) y [src/config](src/config). Los módulos educativos se incorporarán siguiendo esta organización.
 
@@ -133,6 +134,8 @@ Los índices únicos de correo y hash de token tampoco se instalan al arrancar. 
 
 El núcleo de cuestionarios requiere además las colecciones `evaluaciones` e `intentos_evaluacion`, preparadas explícitamente. En intentos se declaran los índices `{ usuarioId: 1, solicitudId: 1 }` único y `{ usuarioId: 1, fecha: -1 }` para historial. No se instalan automáticamente ni los gestiona el instalador de índices de identidad. Sin el índice único compatible, el envío de respuestas permanece bloqueado.
 
+El módulo de proyectos requiere la colección aprobada `entregas_proyecto` y el índice único `{ usuarioId: 1, solicitudId: 1 }`. También necesita un adaptador de cursos con instrucciones, formatos, límites y política de reentregas explícitos. No se crean colecciones ni índices al arrancar; su preparación requiere autorización y revisión previa de datos.
+
 Para consultar correo local sin destinatarios reales:
 
 ```sh
@@ -160,6 +163,10 @@ Las rutas implementadas utilizan el prefijo `/api/v1`:
 - `POST /evaluaciones/:evaluacionId/intentos`: envío completo con `version`, `solicitudId` y `respuestas` (`preguntaId`, `opcionId`). Para examen final también exige `?cursoId=<ObjectId>`.
 - `GET /intentos-evaluacion`: historial propio paginado, con filtros por evaluación/módulo/curso y orden por fecha o porcentaje.
 - `GET /intentos-evaluacion/:intentoId`: detalle de un intento propio.
+- `GET /cursos/:cursoId/proyecto`: instrucciones y política del proyecto mediante el contrato de cursos.
+- `POST /cursos/:cursoId/entregas-proyecto`: registro con `solicitudId` y `evidencias`; cada evidencia contiene `tipo: enlace` y `url`, o `tipo: archivo` y una `referencia` de almacenamiento confiable.
+- `GET /cursos/:cursoId/entregas-proyecto`: historial propio paginado de entregas.
+- `GET /entregas-proyecto/:entregaId`: detalle de una entrega propia.
 
 Swagger en `/docs` permite explorar los contratos y muestra las operaciones de autenticación habilitadas por configuración. Una ruta implementada puede responder 503 si está deshabilitada o falta una protección obligatoria. Las respuestas de registro y recuperación no confirman la existencia de cuentas ni la entrega del correo.
 
@@ -199,7 +206,9 @@ La base de identidad y seguridad y el núcleo de cuestionarios están implementa
 
 El examen final exige completar los cinco módulos y registrar una entrega válida del proyecto, sin aprobación docente adicional. Sus tres intentos se controlan en MongoDB y no se reinician al publicar otra versión. Si faltan requisitos o se agotan los intentos, la consulta y un nuevo envío reciben 403; el listado no incluye el examen. El historial propio y los reintentos idempotentes de envíos ya confirmados siguen disponibles.
 
-La disponibilidad educativa depende de contratos de cursos, progreso y entregas todavía no integrados: el proveedor predeterminado falla cerrado con 503 y las pruebas usan fixtures explícitos. Las rutas están implementadas, pero no se afirma disponibilidad educativa real sin esos adaptadores y la preparación de datos e índices. Los contenidos, las entregas y el progreso continúan en desarrollo.
+El examen consulta entregas mediante un contrato interno del módulo de proyectos. Los adaptadores reales de cursos y progreso siguen pendientes: fallan cerrado con 503 y las pruebas usan fixtures explícitos. Registrar una entrega no habilita por sí solo el examen.
+
+Las entregas requieren una política del curso sin límites académicos predeterminados. Los enlaces se validan como referencias HTTPS de hosts autorizados, sin descargar ni certificar su contenido. No existe proveedor de archivos aprobado ni endpoint de carga: una referencia solo puede registrarse después de validarla con un almacenamiento confiable; el adaptador inicial lo rechaza. La disponibilidad educativa real depende de estos contratos y de preparar datos e índices.
 
 La preparación para producción requiere definir el despliegue del frontend, SMTP, Origin/CORS, proxies, retención de sesiones y recuperación durable de los envíos de correo. Las pruebas locales no sustituyen estas decisiones. Los permisos administrativos todavía no están aprobados.
 
