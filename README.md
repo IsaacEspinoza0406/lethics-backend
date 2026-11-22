@@ -32,6 +32,8 @@ El backend y el frontend se desarrollan en repositorios separados. La API está 
 
 Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints en la estructura actual del repositorio.
 
+El contenido académico privado dispone de un cargador local con validación y adaptación al formato de evaluaciones. Su presencia no habilita cursos, progreso ni publicación: consulta la [guía de carga segura](scripts/learning-content/README.md).
+
 ## Tecnologías utilizadas
 
 - **Node.js 22, NestJS 11 y TypeScript:** aplicación y API REST.

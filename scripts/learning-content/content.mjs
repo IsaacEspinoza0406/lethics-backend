@@ -54,6 +54,10 @@ function text(errors, where, value, { allowEmpty = false } = {}) {
 }
 
 function onlyKeys(errors, where, obj, keys) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    errors.push(`${where}: debe ser un objeto`);
+    return;
+  }
   for (const k of Object.keys(obj)) if (!keys.includes(k)) errors.push(`${where}: campo no permitido "${k}"`);
   for (const k of keys) if (!(k in obj)) errors.push(`${where}: falta el campo "${k}"`);
 }
@@ -105,22 +109,28 @@ function validatePreguntas(errors, where, preguntas, esperado) {
   const ids = new Set();
   preguntas.forEach((q, i) => {
     const w = `${where}[${i}]`;
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return errors.push(`${w}: debe ser un objeto`);
     onlyKeys(errors, w, q, ['id', 'enunciado', 'opciones']);
     text(errors, `${w}.id`, q.id);
-    if (ids.has(q.id)) errors.push(`${w}.id: repetido "${q.id}"`);
+    if (typeof q.id === 'string' && q.id.length > 128) errors.push(`${w}.id: máximo 128 caracteres`);
+    if (ids.has(q.id)) errors.push(`${w}.id: repetido`);
     ids.add(q.id);
     text(errors, `${w}.enunciado`, q.enunciado);
+    if (typeof q.enunciado === 'string' && q.enunciado.length > 4000) errors.push(`${w}.enunciado: máximo 4000 caracteres`);
     if (!Array.isArray(q.opciones) || q.opciones.length !== 4) return errors.push(`${w}.opciones: debe tener 4 opciones`);
     const oids = new Set();
     let correctas = 0;
     q.opciones.forEach((o, j) => {
       const wo = `${w}.opciones[${j}]`;
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return errors.push(`${wo}: debe ser un objeto`);
       onlyKeys(errors, wo, o, ['id', 'texto', 'correcta']);
       text(errors, `${wo}.id`, o.id);
       text(errors, `${wo}.texto`, o.texto);
+      if (typeof o.id === 'string' && o.id.length > 128) errors.push(`${wo}.id: máximo 128 caracteres`);
+      if (typeof o.texto === 'string' && o.texto.length > 2000) errors.push(`${wo}.texto: máximo 2000 caracteres`);
       if (typeof o.correcta !== 'boolean') errors.push(`${wo}.correcta: debe ser booleano`);
       if (o.correcta === true) correctas++;
-      if (oids.has(o.id)) errors.push(`${wo}.id: repetido "${o.id}"`);
+      if (oids.has(o.id)) errors.push(`${wo}.id: repetido`);
       oids.add(o.id);
     });
     if (correctas !== 1) errors.push(`${w}: debe tener exactamente una opción correcta (tiene ${correctas})`);
@@ -128,11 +138,12 @@ function validatePreguntas(errors, where, preguntas, esperado) {
 }
 
 function validateEvaluacion(errors, where, ev, { tipo, preguntas }) {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return errors.push(`${where}: debe ser un objeto`);
   const keys = ['tipo', 'version', 'estado', 'minimoAprobatorio', 'preguntas'];
   const extra = tipo === 'cuestionario' ? ['moduloOrden'] : [];
   onlyKeys(errors, where, ev, [...keys, ...extra]);
   if (ev.tipo !== tipo) errors.push(`${where}.tipo: debe ser "${tipo}"`);
-  if (!isInt(ev.version) || ev.version < 1) errors.push(`${where}.version: debe ser un entero positivo`);
+  if (!isInt(ev.version) || ev.version < 1 || ev.version > 2147483647) errors.push(`${where}.version: debe ser un Int32 positivo`);
   if (!ESTADOS.includes(ev.estado)) errors.push(`${where}.estado: debe ser ${ESTADOS.join(' o ')}`);
   if (ev.minimoAprobatorio !== 70) errors.push(`${where}.minimoAprobatorio: debe ser 70`);
   validatePreguntas(errors, `${where}.preguntas`, ev.preguntas, preguntas);
@@ -244,6 +255,7 @@ export function validateContent(content, { includePending = false } = {}) {
  * sincronización. `moduloOrden` es solo una clave de trabajo y no se guarda.
  */
 export function buildPlan(content, { includePending = false } = {}) {
+  if (validateContent(content, { includePending }).length) throw new Error('Contenido inválido: ejecuta la validación antes de preparar la carga.');
   const plan = {
     curso: { titulo: content.curso.titulo, estado: content.curso.estado, proyectoFinal: content.curso.proyectoFinal },
     modulos: content.modulos.map((m) => ({ orden: m.orden, titulo: m.titulo, activo: m.activo })),
@@ -262,13 +274,30 @@ export function buildPlan(content, { includePending = false } = {}) {
   }
   if (includePending) {
     for (const ev of content.evaluaciones) {
-      plan.evaluaciones.push({ moduloOrden: ev.moduloOrden, doc: { tipo: ev.tipo, version: ev.version, minimoAprobatorio: ev.minimoAprobatorio, preguntas: ev.preguntas, estado: ev.estado } });
+      plan.evaluaciones.push({ moduloOrden: ev.moduloOrden, doc: assessmentDocument(ev) });
     }
     const ex = content.examen;
-    plan.evaluaciones.push({ moduloOrden: null, doc: { tipo: ex.tipo, version: ex.version, minimoAprobatorio: ex.minimoAprobatorio, preguntas: ex.preguntas, estado: ex.estado } });
+    plan.evaluaciones.push({ moduloOrden: null, doc: assessmentDocument(ex) });
     for (const s of content.simuladores) {
       plan.simuladores.push({ moduloOrden: s.moduloOrden, doc: { titulo: s.titulo, version: s.version, contexto: s.contexto, consigna: s.consigna, modo: s.modo, activo: s.activo } });
     }
   }
   return plan;
+}
+
+/** One canonical storage representation. No editorial flags or invented titles are persisted. */
+export function assessmentDocument(evaluation) {
+  const errors = [];
+  const tipo = evaluation?.tipo;
+  if (!['cuestionario', 'examen_final'].includes(tipo)) throw new Error('Tipo de evaluación inválido.');
+  validateEvaluacion(errors, 'evaluacion', evaluation, { tipo, preguntas: tipo === 'cuestionario' ? PREGUNTAS_CUESTIONARIO : PREGUNTAS_EXAMEN });
+  if (errors.length) throw new Error('Evaluación incompatible con el contrato de calificación.');
+  return {
+    tipo, version: evaluation.version, minimoAprobatorio: evaluation.minimoAprobatorio, estado: evaluation.estado,
+    preguntas: evaluation.preguntas.map((q) => ({
+      id: q.id, texto: q.enunciado,
+      opciones: q.opciones.map((o) => ({ id: o.id, texto: o.texto })),
+      opcionCorrectaId: q.opciones.find((o) => o.correcta === true).id,
+    })),
+  };
 }

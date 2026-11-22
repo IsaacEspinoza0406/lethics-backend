@@ -73,7 +73,7 @@ test('un cambio en una lección actualiza solo ese documento', opts, async () =>
 test('la validación detecta contenido inválido', opts, async () => {
   const base = await fresh();
   const casos = {
-    'dos opciones correctas': (c) => { c.evaluaciones[0].preguntas[0].opciones[0].correcta = true; },
+    'dos opciones correctas': (c) => { c.evaluaciones[0].preguntas[0].opciones.forEach((o, i) => { o.correcta = i < 2; }); },
     'bloque con campo extra': (c) => { c.lecciones[1].lecciones[0].secciones[0].icono = 'x'; },
     'tipo de bloque desconocido': (c) => { c.lecciones[1].lecciones[0].secciones[0].tipo = 'imagen'; },
     'más de 20 secciones': (c) => { const s = c.lecciones[1].lecciones[0].secciones; while (s.length < 21) s.push({ tipo: 'parrafo', texto: 'x' }); },

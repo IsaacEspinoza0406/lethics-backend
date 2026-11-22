@@ -7,7 +7,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadContent, buildPlan } from './content.mjs';
@@ -28,10 +30,11 @@ async function freshPlan() {
 
 /** Crea una base temporal propia, ejecuta la prueba y borra solo esa base. */
 async function withDb(fn) {
-  const dbName = `lethics_content_test_it_${randomBytes(6).toString('hex')}`;
+  const dbName = `lethics_content_test_it_${randomUUID().replaceAll('-', '')}`;
   assertSafeTarget(uri, dbName);
   const { default: mongoose } = await import('mongoose');
   const conn = await mongoose.createConnection(uri, { dbName, serverSelectionTimeoutMS: 5000 }).asPromise();
+  const ownedDb = conn.db, ownedClient = conn.getClient();
   let owns = false;
   try {
     const { databases } = await conn.getClient().db().admin().listDatabases();
@@ -39,8 +42,14 @@ async function withDb(fn) {
     owns = true;
     await fn(conn);
   } finally {
-    if (owns && TEST_DB_PATTERN.test(dbName) && conn.name === dbName) await conn.dropDatabase();
-    await conn.close();
+    try {
+      if (owns) {
+        assert.ok(TEST_DB_PATTERN.test(dbName) && conn.name === dbName && conn.db === ownedDb && conn.getClient() === ownedClient, 'Se rechazó limpieza de una conexión/base no propietaria');
+        await ownedDb.dropDatabase();
+        const { databases } = await ownedClient.db('admin').admin().listDatabases();
+        assert.equal(databases.some((d) => d.name === dbName), false, 'La base temporal no se limpió');
+      }
+    } finally { await conn.close(); }
   }
 }
 
@@ -75,6 +84,56 @@ test('carga real: crea todo, la repetida no cambia nada y los tipos son los del 
     assert.equal(await n('evaluaciones', { cursoId }), 6);
 
     await assertSafeDatabase(conn.db);
+  });
+});
+
+test('los documentos cargados satisfacen el esquema real de A1/A2 sin publicar borradores', { skip }, async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const { EvaluationSchema } = require('../../dist/modules/assessments/infrastructure/assessment.schemas.js');
+  await withDb(async (conn) => {
+    await syncContentAtomic(conn.getClient(), conn.db, await freshPlan());
+    const Model = conn.model('ContentEvaluationCompatibility', EvaluationSchema);
+    for (const doc of await conn.db.collection('evaluaciones').find({}).toArray()) {
+      // Do not print Mongoose validation errors: they can contain private question values.
+      const valid = await new Model(doc).validate().then(() => true, () => false);
+      assert.equal(valid, true, 'Evaluación cargada incompatible con el esquema');
+      assert.equal(doc.estado, 'borrador');
+      assert.equal(doc.preguntas.every((q) => typeof q.opcionCorrectaId === 'string' && !('enunciado' in q) && q.opciones.every((o) => !('correcta' in o))), true);
+    }
+  });
+});
+
+test('rechaza cambios en una versión, revierte la carga completa y permite una versión nueva', { skip }, async () => {
+  await withDb(async (conn) => {
+    const plan = await freshPlan(), db = conn.db, client = conn.getClient();
+    await syncContentAtomic(client, db, plan);
+    const before = await db.collection('evaluaciones').findOne({ tipo: 'cuestionario' });
+    plan.lecciones[0].doc.titulo = 'Cambio sintético que debe revertirse';
+    plan.evaluaciones[0].doc.preguntas[0].texto = 'Cambio sintético de pregunta';
+    await assert.rejects(() => syncContentAtomic(client, db, plan), /inmutable/);
+    assert.equal(await db.collection('lecciones').countDocuments({ titulo: plan.lecciones[0].doc.titulo }), 0);
+    assert.equal((await db.collection('evaluaciones').findOne({ _id: before._id })).preguntas[0].texto === before.preguntas[0].texto, true);
+    plan.evaluaciones[0].doc.version++;
+    await syncContentAtomic(client, db, plan);
+    assert.equal(await db.collection('evaluaciones').countDocuments({}), 7);
+    assert.ok(await db.collection('evaluaciones').findOne({ _id: before._id, version: before.version }));
+  });
+});
+
+test('CLI existente aplica dos veces solo en la base UUID propia, sin cambios en la repetición', { skip }, async () => {
+  await withDb(async (conn) => {
+    const args = ['scripts/load-learning-content.mjs', '--include-pending', '--apply', '--db', conn.name];
+    const run = () => promisify(execFile)(process.execPath, args, { env: { ...process.env, LETHICS_CONTENT_LOAD_URI: uri }, timeout: 30000 });
+    for (let i = 0; i < 2; i++) {
+      // Suppress child errors (which contain environment/driver details); assert only the outcome.
+      const result = await run().then((value) => ({ ok: true, ...value }), () => ({ ok: false }));
+      assert.equal(result.ok, true, 'Falló la carga CLI aislada');
+      if (i === 1) {
+        assert.equal((result.stdout.match(/creados\s+0 · actualizados\s+0/g) ?? []).length, 6);
+      }
+    }
+    assert.deepEqual(await countContent(conn.db), ESPERADO);
   });
 });
 

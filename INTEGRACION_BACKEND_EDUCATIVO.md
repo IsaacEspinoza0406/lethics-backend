@@ -1,6 +1,6 @@
 # Integración del backend educativo
 
-Guía de los contratos implementados entre evaluaciones, proyectos y los futuros módulos de cursos/progreso. Los módulos educativos de Backend B todavía no están integrados en esta rama. Las fixtures demuestran el contrato, no una integración real con dichos módulos.
+Guía de los contratos implementados entre evaluaciones, proyectos y los futuros módulos de cursos/progreso. Backend B ya aportó datos académicos privados y un cargador de MongoDB; todavía no existen módulos NestJS de cursos o progreso en esta rama. Las fixtures demuestran el contrato, no una integración real con dichos servicios. La [guía del cargador](scripts/learning-content/README.md) documenta la adaptación del contenido y sus límites de seguridad.
 
 ## Responsabilidades y dependencias
 
@@ -71,6 +71,10 @@ interface ProjectPolicy {
 El adaptador debe comprobar que el curso y su proyecto existen y están disponibles para ese estudiante. `null` significa no disponible, no una caída del servicio. Debe retornar el curso solicitado y una política completa aprobada por el equipo, nunca límites del frontend. El proveedor actual UnintegratedProjectCourse devuelve 503.
 
 `maxEntregas` incluye la primera entrega y las reentregas. `hostsEnlace` autoriza hosts HTTPS exactos en minúsculas, sin comodines ni autorización por sufijo. Los formatos son MIME confiables y los tamaños, bytes exactos. No hay valores académicos predeterminados. Los límites técnicos del [dominio](src/modules/projects/domain/project.ts) incluyen 20 evidencias y elementos por lista, 2048 caracteres por URL y contadores Int32; no equivalen a una cuota académica aprobada.
+
+Las fuentes académicas locales confirman PDF/DOCX, 10 MB por archivo, tres enlaces y una entrega inicial más dos reentregas. La traducción propuesta para el futuro adaptador es explícita: `maxEntregas: 3`, `maxEnlaces: 3`, formatos MIME `application/pdf` y `application/vnd.openxmlformats-officedocument.wordprocessingml.document`. El equipo debe precisar la cantidad de archivos permitidos, los hosts autorizados y si «10 MB» significa 10 000 000 o 10 485 760 bytes antes de completar `maxArchivos`, `hostsEnlace` y `maxArchivoBytes`.
+
+Actualmente `cursos.proyectoFinal` solo contiene `instrucciones`, `requisitos[]` y `formatosPermitidos[]`. No se extrae una política confiable de su texto libre ni se añaden campos al curso. El futuro adaptador deberá combinar formatos estructurados validados con una política aprobada y explícita, comprobar disponibilidad y pertenencia, y rechazar configuraciones incompletas. Esta propuesta no habilita entregas: ProjectCoursePort conserva su proveedor 503 y ProjectFilePort sigue sin almacenamiento real.
 
 ### Archivos y evidencia
 
