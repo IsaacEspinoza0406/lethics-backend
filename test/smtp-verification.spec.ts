@@ -28,6 +28,15 @@ describe('SMTP desacoplado y exclusivamente simulado durante pruebas', () => {
     new SmtpVerificationMailer(new ConfigService({ ...smtp, SMTP_PORT: 587, SMTP_SECURE: false }));
     expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({ secure: false, requireTLS: true }));
   });
+  it('reutiliza transporte seguro y política de entrega para recuperación sin enlazar URLs', async () => {
+    const mailer = new SmtpVerificationMailer(new ConfigService(smtp)), token = randomBytes(32).toString('base64url');
+    await mailer.sendPasswordRecovery('persona@example.test', token, 15);
+    expect(transport.sendMail).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Recuperación de contraseña — Lethics', text: expect.stringContaining(token) }));
+    const message = transport.sendMail.mock.calls[0][0]; expect(message.text).not.toContain('http');
+    await expect(mailer.sendPasswordRecovery('persona@example.test', '123456', 15)).rejects.toBeInstanceOf(VerificationDeliveryError);
+    await expect(mailer.sendPasswordRecovery('persona@example.test', token, 16)).rejects.toBeInstanceOf(VerificationDeliveryError);
+    mailer.onApplicationShutdown();
+  });
   it('comprueba disponibilidad sin enviar y falla cerrado si la comprobación es incierta', async () => {
     const mailer = new SmtpVerificationMailer(new ConfigService(smtp));
     await mailer.assertAvailable();
