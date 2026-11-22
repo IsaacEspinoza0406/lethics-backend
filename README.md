@@ -2,7 +2,7 @@
 
 Lethics es una plataforma web educativa orientada al aprendizaje de ética profesional, principios, legislación y buenas prácticas en el desarrollo de software.
 
-Este repositorio contiene su API REST. Actualmente proporciona los servicios de identidad, seguridad y el núcleo de cuestionarios; sobre esta base se incorporarán los contenidos educativos, las demás actividades y el seguimiento del estudiante.
+Este repositorio contiene la API REST de Lethics: identidad y autenticación, seguridad, cuestionarios, examen final y entregas del proyecto. Estos servicios forman la base del recorrido educativo; su conexión con cursos y progreso, así como el almacenamiento de archivos, continúa pendiente de integración.
 
 ## Acerca del proyecto
 
@@ -114,7 +114,7 @@ Conserva los volúmenes de datos y la clave interna del replica set. Cambiar las
 - **Seguridad:** proporciona claves independientes de 32 bytes aleatorios en base64 para `JWT_ACCESS_SECRET_BASE64`, `VERIFICATION_CODE_HMAC_KEY_BASE64` y `RATE_LIMIT_HMAC_KEY_BASE64`.
 - **JWT:** configura issuer, audience y duración. El acceso tiene un máximo de 15 minutos; la duración inicial del refresh es de siete días.
 - **HTTP y correo:** `AUTH_HTTP_ENABLED=false` y `VERIFICATION_MAIL_TRANSPORT=disabled` bloquean por defecto las operaciones de autenticación pública. Registro, reenvío y solicitud de recuperación requieren SMTP configurado.
-- **Navegador:** define `AUTH_BROWSER_ORIGIN` para el origen autorizado; refresh y logout lo requieren. Las cookies son HttpOnly y SameSite Strict; en producción, Secure es obligatorio.
+- **Navegador:** `AUTH_BROWSER_ORIGIN` debe coincidir exactamente con el origen del frontend (esquema, host y puerto, sin ruta ni barra final); refresh y logout lo requieren. Las cookies son HttpOnly y SameSite Strict; en producción, Secure es obligatorio. Esta variable no habilita CORS.
 
 Para generar una clave, ejecuta este comando por separado para cada variable y guarda el resultado únicamente en tu configuración privada:
 
@@ -143,6 +143,8 @@ node scripts/mailpit.cjs serve
 ```
 
 El comando imprime la URL de Mailpit y los valores SMTP de prueba que debes establecer en la sesión antes de iniciar Node.js, incluido `NODE_EXTRA_CA_CERTS`. La interfaz usa normalmente `http://127.0.0.1:8025`; si los puertos están ocupados, el script selecciona otros. Ctrl+C limpia su entorno temporal. El adaptador de desarrollo sin SMTP no envía correo ni simula una entrega satisfactoria.
+
+Para preparar un SMTP estándar, distinguir TLS implícito de STARTTLS y coordinar puertos, cookies y acceso desde Next.js, consulta la [guía de correo y frontend](CONFIGURACION_CORREO_Y_FRONTEND.md). Las credenciales reales se configuran únicamente en el `.env` privado; las pruebas automatizadas conservan Mailpit y destinatarios sintéticos.
 
 ## API REST
 
