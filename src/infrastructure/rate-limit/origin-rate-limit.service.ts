@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import { createClient } from 'redis';
 import { inspectRedisReadiness } from './redis-readiness';
 
-export type LimitedOperation = 'register' | 'verify' | 'resend';
+export type LimitedOperation = 'register' | 'verify' | 'resend' | 'login' | 'refresh' | 'logout';
 export class RateLimitUnavailableError extends Error { constructor() { super('Control de solicitudes no disponible'); } }
 
 /** Only the direct socket address is accepted. Proxy deployments must remain blocked. */
@@ -55,14 +55,15 @@ export class OriginRateLimitService implements OnApplicationShutdown {
 
   async consume(operation: LimitedOperation, socketAddress: string | undefined, behindProxy: boolean): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
     try {
-      if (!['register', 'verify', 'resend'].includes(operation)) throw new Error('invalid operation');
+      if (!['register', 'verify', 'resend', 'login', 'refresh', 'logout'].includes(operation)) throw new Error('invalid operation');
       if (typeof behindProxy !== 'boolean') throw new RateLimitUnavailableError();
       const origin = resolveDirectOrigin(socketAddress, behindProxy);
       const client = await this.getClient();
-      const caps = { register: 'REGISTER', verify: 'VERIFY', resend: 'RESEND' } as const;
-      const window = this.config.getOrThrow<number>(`RATE_LIMIT_${caps[operation]}_WINDOW_SECONDS`);
-      const max = this.config.getOrThrow<number>(`RATE_LIMIT_${caps[operation]}_MAX`);
-      const maxWindow = Math.max(...Object.values(caps).map((v) => this.config.getOrThrow<number>(`RATE_LIMIT_${v}_WINDOW_SECONDS`)));
+      const caps = { register: 'REGISTER', verify: 'VERIFY', resend: 'RESEND', login: 'LOGIN', refresh: 'REFRESH', logout: 'LOGOUT' } as const;
+      const sessionOperation = ['login', 'refresh', 'logout'].includes(operation);
+      const window = this.config.get<number>(`RATE_LIMIT_${caps[operation]}_WINDOW_SECONDS`, sessionOperation ? 600 : 0);
+      const max = this.config.get<number>(`RATE_LIMIT_${caps[operation]}_MAX`, operation === 'login' ? 10 : sessionOperation ? 30 : 0);
+      const maxWindow = Math.max(...Object.values(caps).map((v) => this.config.get<number>(`RATE_LIMIT_${v}_WINDOW_SECONDS`, sessionOperation && v === caps[operation] ? 600 : 0)));
       const before = await client.info('server');
       const persistence = await client.info('persistence');
       const replication = await client.info('replication');
