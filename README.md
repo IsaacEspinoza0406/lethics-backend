@@ -2,7 +2,7 @@
 
 Lethics es una plataforma web educativa orientada al aprendizaje de ética profesional, principios, legislación y buenas prácticas en el desarrollo de software.
 
-Este repositorio contiene su API REST. Actualmente proporciona los servicios de identidad y seguridad; sobre esta base se desarrollarán los contenidos educativos, las evaluaciones, las actividades y el seguimiento del estudiante.
+Este repositorio contiene su API REST. Actualmente proporciona los servicios de identidad, seguridad y el núcleo de cuestionarios; sobre esta base se incorporarán los contenidos educativos, las demás actividades y el seguimiento del estudiante.
 
 ## Acerca del proyecto
 
@@ -18,13 +18,14 @@ El backend y el frontend se desarrollan en repositorios separados. La API está 
 - Inicio de sesión, rotación de refresh tokens, detección de reutilización y cierre de sesión.
 - Recuperación y restablecimiento de contraseña, con revocación de sesiones.
 - Autenticación de rutas privadas, autorización por rol y consulta del perfil propio.
+- Consulta segura de cuestionarios, calificación en el servidor e historial privado con envíos idempotentes.
 - Envío SMTP, limitación de solicitudes con Redis y comprobaciones operativas.
 - Endpoint de salud y documentación interactiva con Swagger.
 
 **Previstas**
 
 - Consulta y organización de cursos, módulos, lecciones y flashcards.
-- Evaluaciones, actividades y entregas de proyectos.
+- Flujo completo del examen final, actividades y entregas de proyectos.
 - Seguimiento del progreso y resultados del estudiante.
 
 Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints en la estructura actual del repositorio.
@@ -41,9 +42,9 @@ Estas funcionalidades educativas todavía no cuentan con módulos ni endpoints e
 
 ## Arquitectura
 
-El backend se organiza en módulos de autenticación HTTP, identidad, usuarios y salud. Los casos de uso de identidad se separan de los controladores y de la persistencia; seguridad y limitación de solicitudes son componentes compartidos.
+El backend se organiza en módulos de autenticación HTTP, identidad, usuarios, evaluaciones y salud. Los casos de uso se separan de los controladores y de la persistencia; seguridad y limitación de solicitudes son componentes compartidos.
 
-MongoDB almacena usuarios, tokens de cuenta y sesiones. Redis mantiene las cuotas de solicitudes. El frontend consume la API REST y no accede directamente a estas bases de datos.
+MongoDB almacena usuarios, tokens de cuenta, sesiones, evaluaciones e intentos. Redis mantiene las cuotas de autenticación. El frontend consume la API REST y no accede directamente a estas bases de datos.
 
 La estructura principal se encuentra en [src/modules](src/modules), [src/infrastructure](src/infrastructure) y [src/config](src/config). Los módulos educativos se incorporarán siguiendo esta organización.
 
@@ -129,6 +130,8 @@ npm run ops:redis
 
 Los índices únicos de correo y hash de token tampoco se instalan al arrancar. `npm run ops:install-identity-indexes` permite instalarlos con comprobación previa de datos y confirmación interactiva. Úsalo solo sobre un destino autorizado, con respaldo y escritores detenidos; no corrige datos heredados ni elimina índices incompatibles. Redis debe superar las comprobaciones de persistencia y continuidad; tras un reinicio puede mantenerse bloqueado hasta una hora.
 
+El núcleo de cuestionarios requiere además las colecciones `evaluaciones` e `intentos_evaluacion`, preparadas explícitamente. En intentos se declaran los índices `{ usuarioId: 1, solicitudId: 1 }` único y `{ usuarioId: 1, fecha: -1 }` para historial. No se instalan automáticamente ni los gestiona el instalador de índices de identidad. Sin el índice único compatible, el envío de respuestas permanece bloqueado.
+
 Para consultar correo local sin destinatarios reales:
 
 ```sh
@@ -151,6 +154,11 @@ Las rutas implementadas utilizan el prefijo `/api/v1`:
 - `GET /users/me`: perfil propio con `Authorization: Bearer <accessToken>`.
 - `POST /auth/password/forgot`: solicitud de recuperación mediante `correo`.
 - `POST /auth/password/reset`: restablecimiento con `token` y `nuevaContraseña`.
+- `GET /evaluaciones?moduloId=<ObjectId>`: cuestionarios publicados disponibles, por versión y con paginación.
+- `GET /evaluaciones/:evaluacionId`: cuestionario sin respuestas correctas.
+- `POST /evaluaciones/:evaluacionId/intentos`: envío completo con `version`, `solicitudId` y `respuestas` (`preguntaId`, `opcionId`).
+- `GET /intentos-evaluacion`: historial propio paginado, con filtros por evaluación/módulo y orden por fecha o porcentaje.
+- `GET /intentos-evaluacion/:intentoId`: detalle de un intento propio.
 
 Swagger en `/docs` permite explorar los contratos y muestra las operaciones de autenticación habilitadas por configuración. Una ruta implementada puede responder 503 si está deshabilitada o falta una protección obligatoria. Las respuestas de registro y recuperación no confirman la existencia de cuentas ni la entrega del correo.
 
@@ -186,7 +194,9 @@ Mailpit se crea en un proyecto Docker independiente y se elimina al terminar, ju
 
 ## Estado del proyecto
 
-La base de identidad y seguridad está implementada y dispone de pruebas unitarias y de integración. Los módulos de contenido, evaluaciones, actividades y progreso continúan previstos para su desarrollo.
+La base de identidad y seguridad y el núcleo de cuestionarios están implementados con pruebas unitarias y de integración. Los cuestionarios exigen responder todas las preguntas, se aprueban desde el 70% y permiten nuevos intentos independientes; `solicitudId` evita duplicar un mismo envío técnico.
+
+La disponibilidad de cuestionarios depende de un contrato con cursos, módulos y progreso todavía no integrado: el proveedor predeterminado falla cerrado y las pruebas usan fixtures explícitos. Las rutas están implementadas, pero no se afirma disponibilidad educativa real sin ese adaptador y la preparación de datos e índices. Los contenidos, el flujo de examen final, las entregas y el progreso continúan en desarrollo.
 
 La preparación para producción requiere definir el despliegue del frontend, SMTP, Origin/CORS, proxies, retención de sesiones y recuperación durable de los envíos de correo. Las pruebas locales no sustituyen estas decisiones. Los permisos administrativos todavía no están aprobados.
 
