@@ -18,12 +18,12 @@ export class AuthHttpGuard implements CanActivate {
   constructor(private readonly policy: AuthHttpPolicy, private readonly reflector: Reflector, private readonly operations: IdentityOperationsService, private readonly config: ConfigService) {}
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const operation = this.reflector.get<LimitedOperation>(AUTH_OPERATION, context.getHandler());
-    if (!['register', 'verify', 'resend', 'login', 'refresh', 'logout'].includes(operation)) throw new ServiceUnavailableException();
+    if (!['register', 'verify', 'resend', 'login', 'refresh', 'logout', 'forgot', 'reset'].includes(operation)) throw new ServiceUnavailableException();
     if (!this.policy.isEnabled(operation)) throw new ServiceUnavailableException();
     const request = context.switchToHttp().getRequest<AuthRequest>();
-    if (['login', 'refresh', 'logout'].includes(operation)) {
+    if (['login', 'refresh', 'logout', 'forgot', 'reset'].includes(operation)) {
       context.switchToHttp().getResponse<{ setHeader(name: string, value: string): void }>().setHeader('Cache-Control', 'no-store');
-      if (operation === 'login') assertLoginRequest(request, this.config);
+      if (['login', 'forgot', 'reset'].includes(operation)) assertLoginRequest(request, this.config);
       else assertSessionRequest(request, this.config);
     }
     try {

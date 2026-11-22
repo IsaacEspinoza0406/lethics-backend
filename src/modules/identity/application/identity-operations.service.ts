@@ -4,13 +4,25 @@ import { ResendVerificationService } from './resend-verification.service';
 import { LoginService, LoginResult } from './login.service';
 import { VerifyEmailService } from './verify-email.service';
 import { SessionService } from './session.service';
+import { PasswordRecoveryService } from './password-recovery.service';
 
 export class OriginQuotaExceededError extends Error { constructor() { super('Límite de solicitudes alcanzado'); } }
 
 /** Internal boundary; origin and proxy mode must come from trusted server configuration. */
 export class IdentityOperationsService {
   private readonly permits = new WeakMap<object, { operation: LimitedOperation; origin: string | undefined; behindProxy: boolean }>();
-  constructor(private readonly limiter: OriginRateLimitService, private readonly registration: RegistrationService, private readonly verification: VerifyEmailService, private readonly resendService: ResendVerificationService, private readonly loginService?: LoginService, private readonly sessionService?: SessionService) {}
+  constructor(private readonly limiter: OriginRateLimitService, private readonly registration: RegistrationService, private readonly verification: VerifyEmailService, private readonly resendService: ResendVerificationService, private readonly loginService?: LoginService, private readonly sessionService?: SessionService, private readonly recovery?: PasswordRecoveryService) {}
+
+  async forgot(origin: string | undefined, behindProxy: boolean, correo: string, permit?: object): Promise<void> {
+    await this.allow('forgot', origin, behindProxy, permit);
+    if (!this.recovery) throw new Error('Recuperación no disponible');
+    await this.recovery.forgot(correo);
+  }
+  async resetPassword(origin: string | undefined, behindProxy: boolean, token: string, password: string, permit?: object): Promise<void> {
+    await this.allow('reset', origin, behindProxy, permit);
+    if (!this.recovery) throw new Error('Recuperación no disponible');
+    await this.recovery.reset(token, password);
+  }
 
   private async allow(operation: LimitedOperation, origin: string | undefined, behindProxy: boolean, permit?: object): Promise<void> {
     if (permit) {

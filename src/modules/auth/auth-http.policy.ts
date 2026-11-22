@@ -17,7 +17,7 @@ export class AuthHttpPolicy {
   isEnabled(operation: LimitedOperation): boolean {
     if (this.config.get('AUTH_HTTP_ENABLED') !== true || this.config.get('AUTH_BEHIND_PROXY', false) !== false) return false;
     if (operation === 'refresh' || operation === 'logout') return Boolean(this.config.get<string>('AUTH_BROWSER_ORIGIN'));
-    return operation === 'verify' || operation === 'login' || this.mailer instanceof SmtpVerificationMailer;
+    return operation === 'verify' || operation === 'login' || operation === 'reset' || this.mailer instanceof SmtpVerificationMailer;
   }
 
   async assertReady(operation: LimitedOperation): Promise<void> {
@@ -25,10 +25,11 @@ export class AuthHttpPolicy {
     try {
       if (this.connection.readyState !== 1 || !this.connection.db ||
           (await inspectIdentityIndexes(this.connection.db)).some((index) => index.status !== 'ready')) throw new Error('Precondiciones no satisfechas');
-      if (operation === 'login' || operation === 'refresh' || operation === 'logout') {
-        refreshCookieOptions(this.config);
+      if (['login', 'refresh', 'logout', 'forgot', 'reset'].includes(operation)) {
+        if (['login', 'refresh', 'logout'].includes(operation)) refreshCookieOptions(this.config);
         if (!(await this.connection.db.listCollections({ name: 'sesiones' }, { nameOnly: true }).toArray()).length) throw new Error('Sesiones no disponibles');
-      } else if (operation !== 'verify') {
+      }
+      if (['register', 'resend', 'forgot'].includes(operation)) {
         if (!(this.mailer instanceof SmtpVerificationMailer)) throw new Error('Transporte no disponible');
         await this.mailer.assertAvailable();
       }

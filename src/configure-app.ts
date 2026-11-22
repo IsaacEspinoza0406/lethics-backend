@@ -14,5 +14,8 @@ export function configureApp(app: INestApplication): void {
   for (const operation of ['register', 'verify', 'resend', 'login', 'refresh', 'logout'] as const) {
     if (!policy?.isEnabled(operation)) delete document.paths[`/api/v1/auth/${operation}`];
   }
+  for (const operation of ['forgot', 'reset'] as const) {
+    if (!policy?.isEnabled(operation)) delete document.paths[`/api/v1/auth/password/${operation}`];
+  }
   SwaggerModule.setup('docs', app, document);
 }

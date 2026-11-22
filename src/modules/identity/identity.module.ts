@@ -11,6 +11,7 @@ import { AccessTokenService } from '../../infrastructure/security/access-token.s
 import { OpaqueTokenService } from '../../infrastructure/security/opaque-token.service';
 import { LoginService } from './application/login.service';
 import { SessionService } from './application/session.service';
+import { PasswordRecoveryService } from './application/password-recovery.service';
 import { AuthenticatedIdentityService } from './application/authenticated-identity.service';
 import { RegistrationService } from './application/registration.service';
 import { VerifyEmailService } from './application/verify-email.service';
@@ -33,6 +34,7 @@ const POLICY = Symbol('VERIFICATION_POLICY');
   ])],
   providers: [
     AuthenticatedIdentityService,
+    PasswordRecoveryService,
     { provide: VerificationCodeService, useFactory: verificationCodesFromConfig, inject: [ConfigService] },
     { provide: POLICY, useFactory: verificationPolicyFromConfig, inject: [ConfigService] },
     { provide: VERIFICATION_MAILER, useFactory: verificationMailerFromConfig, inject: [ConfigService] },
@@ -41,7 +43,7 @@ const POLICY = Symbol('VERIFICATION_POLICY');
     { provide: ResendVerificationService, useFactory: (connection: Connection, users: Model<Usuario>, tokens: Model<TokenCuenta>, codes: VerificationCodeService, mailer: VerificationMailer, policy: VerificationPolicy) => new ResendVerificationService(connection, users, tokens, codes, mailer, policy), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('TokenCuenta'), VerificationCodeService, VERIFICATION_MAILER, POLICY] },
     { provide: LoginService, useFactory: (connection: Connection, users: Model<Usuario>, sessions: Model<Sesion>, passwords: PasswordService, access: AccessTokenService, opaque: OpaqueTokenService, config: ConfigService) => new LoginService(connection, users, sessions, passwords, access, opaque, config), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('Sesion'), PasswordService, AccessTokenService, OpaqueTokenService, ConfigService] },
     { provide: SessionService, useFactory: (connection: Connection, users: Model<Usuario>, sessions: Model<Sesion>, access: AccessTokenService, opaque: OpaqueTokenService, config: ConfigService) => new SessionService(connection, users, sessions, access, opaque, config), inject: [getConnectionToken(), getModelToken('Usuario'), getModelToken('Sesion'), AccessTokenService, OpaqueTokenService, ConfigService] },
-    { provide: IdentityOperationsService, useFactory: (limiter: OriginRateLimitService, registration: RegistrationService, verification: VerifyEmailService, resend: ResendVerificationService, login: LoginService, sessions: SessionService) => new IdentityOperationsService(limiter, registration, verification, resend, login, sessions), inject: [OriginRateLimitService, RegistrationService, VerifyEmailService, ResendVerificationService, LoginService, SessionService] },
+    { provide: IdentityOperationsService, useFactory: (limiter: OriginRateLimitService, registration: RegistrationService, verification: VerifyEmailService, resend: ResendVerificationService, login: LoginService, sessions: SessionService, recovery: PasswordRecoveryService) => new IdentityOperationsService(limiter, registration, verification, resend, login, sessions, recovery), inject: [OriginRateLimitService, RegistrationService, VerifyEmailService, ResendVerificationService, LoginService, SessionService, PasswordRecoveryService] },
   ],
   exports: [MongooseModule, IdentityOperationsService, VERIFICATION_MAILER, AuthenticatedIdentityService],
 })

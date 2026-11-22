@@ -14,6 +14,7 @@ import { readRefreshCookie, refreshCookieOptions } from './login-http.policy';
 import { LoginResult } from '../identity/application/login.service';
 import { SessionDeniedError } from '../identity/application/session.service';
 import { Public } from './access-control';
+import { ForgotPasswordDto, ResetPasswordDto } from '../identity/presentation/dto/password-recovery.dto';
 
 export class AuthMessageDto {
   @ApiProperty({ example: 'Solicitud recibida.' })
@@ -36,6 +37,28 @@ export class LoginResponseDto {
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
   constructor(private readonly operations: IdentityOperationsService, private readonly config: ConfigService) {}
+
+  @Post('password/forgot')
+  @AuthOperation('forgot')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Solicitar recuperación; respuesta uniforme sin confirmar cuenta ni entrega.' })
+  @ApiAcceptedResponse({ type: AuthMessageDto })
+  async forgot(@Body() input: ForgotPasswordDto, @Req() request: AuthRequest): Promise<AuthMessageDto> {
+    try { await this.operations.forgot(request.socket.remoteAddress, false, input.correo, request[AUTH_ORIGIN_PERMIT]); }
+    catch (error) { throw authHttpFailure(error); }
+    return { message: 'Si la cuenta es elegible, recibirás instrucciones de recuperación.' };
+  }
+
+  @Post('password/reset')
+  @AuthOperation('reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Restablecer contraseña con token de un solo uso y revocar sesiones.' })
+  @ApiOkResponse({ type: AuthMessageDto })
+  async resetPassword(@Body() input: ResetPasswordDto, @Req() request: AuthRequest): Promise<AuthMessageDto> {
+    try { await this.operations.resetPassword(request.socket.remoteAddress, false, input.token, input.nuevaContraseña, request[AUTH_ORIGIN_PERMIT]); }
+    catch (error) { throw authHttpFailure(error); }
+    return { message: 'Contraseña restablecida.' };
+  }
 
   private sessionResponse(result: LoginResult, response: Response): LoginResponseDto {
     response.setHeader('Cache-Control', 'no-store'); response.setHeader('Pragma', 'no-cache');

@@ -35,11 +35,16 @@ export class LoginService implements OnModuleInit {
     const refreshToken = this.opaque.generate(), created = new Date(), expires = new Date(created.getTime() + ttl * 1000);
     const accessToken = this.access.sign(user._id.toString());
     const id = new Types.ObjectId(), family = randomUUID();
+    // A fresh salted encoding is a real write on the shared user document. This serializes
+    // session creation with password reset; a no-op $set would not provide that guarantee.
+    const loginHash = await this.passwords.hash(input.contraseña);
     const transaction = await this.connection.startSession();
     try {
       await transaction.withTransaction(async () => {
-        const current = await this.users.findOne({ _id: user._id, contraseñaHash: user.contraseñaHash }).session(transaction);
-        if (!eligibleSessionAccount(current)) throw new LoginDeniedError();
+        const current = await this.users.findById(user._id).select('+contraseñaHash').session(transaction);
+        if (!current || !eligibleSessionAccount(current) || (current.contraseñaHash !== user.contraseñaHash && !(await this.passwords.verify(current.contraseñaHash, input.contraseña)))) throw new LoginDeniedError();
+        const updated = await this.users.updateOne({ _id: user._id, contraseñaHash: current.contraseñaHash }, { $set: { contraseñaHash: loginHash } }, { session: transaction });
+        if (updated.modifiedCount !== 1) throw new LoginDeniedError();
         await this.sessions.create([{ _id: id, usuarioId: user._id, refreshTokenHash: this.opaque.digest('refresh', refreshToken),
           creadaEn: created, expiraEn: expires, revocadaEn: null, familia: family }], { session: transaction });
       });
