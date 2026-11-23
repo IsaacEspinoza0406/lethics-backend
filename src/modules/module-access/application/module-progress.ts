@@ -1,9 +1,9 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 
 /**
- * Read-only contract with the progress module (Backend B, increment 3). Lessons and modules are gated by it.
+ * Read-only contract with the progress module (Backend B, increment 3). Modules and their activities are gated by it.
  * `completedModules` returns the ids of the course modules that satisfy the rule agreed for opening the next
- * module; the rule itself belongs to the progress module, never to the content module.
+ * module; the rule itself belongs to the progress module, never to the content modules.
  * A failure must throw: it must never be turned into "nothing completed" or "everything open".
  */
 export abstract class ModuleProgressPort {

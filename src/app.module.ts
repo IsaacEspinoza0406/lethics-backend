@@ -10,6 +10,7 @@ import { AuthHttpModule } from './modules/auth/auth-http.module';
 import { UsersModule } from './modules/users/users.module';
 import { AssessmentsModule } from './modules/assessments/assessments.module';
 import { LearningModule } from './modules/learning/learning.module';
+import { FlashcardsModule } from './modules/flashcards/flashcards.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { LearningModule } from './modules/learning/learning.module';
     UsersModule,
     AssessmentsModule,
     LearningModule,
+    FlashcardsModule,
   ],
 })
 export class AppModule {}

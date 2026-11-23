@@ -2,7 +2,8 @@ import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnav
 import { Types } from 'mongoose';
 import { LearningContentService } from '../src/modules/learning/application/learning-content.service';
 import { LearningService } from '../src/modules/learning/application/learning.service';
-import { ModuleProgressPort, UnintegratedModuleProgress } from '../src/modules/learning/application/module-progress';
+import { ModuleAccessService } from '../src/modules/module-access/application/module-access.service';
+import { ModuleProgressPort, UnintegratedModuleProgress } from '../src/modules/module-access/application/module-progress';
 import { MAX_SECTIONS, unlockedModules, validBlock, validCourse, validLesson, validModule } from '../src/modules/learning/domain/learning';
 import { courseFixture, lessonFixture, moduleFixture, sampleBlocks } from './learning-fixtures';
 
@@ -66,7 +67,10 @@ describe('LearningService', () => {
     publishedCourses: jest.fn(), publishedCourse: jest.fn(), courseModules: jest.fn(), module: jest.fn(), activeLessons: jest.fn(), activeLesson: jest.fn(),
   };
   const progress = { completedModules: jest.fn() };
-  const service = () => new LearningService(content as unknown as LearningContentService, progress as unknown as ModuleProgressPort);
+  const service = () => {
+    const contentService = content as unknown as LearningContentService;
+    return new LearningService(contentService, new ModuleAccessService(contentService, progress as unknown as ModuleProgressPort));
+  };
   beforeEach(() => {
     jest.resetAllMocks();
     content.publishedCourse.mockImplementation(async (id: Types.ObjectId) => (id.equals(course._id) ? course : null));
@@ -131,9 +135,9 @@ describe('LearningService', () => {
     expect(result.secciones.map((s) => s.tipo)).toEqual(['titulo', 'parrafo', 'lista', 'tabla', 'destacado', 'recurso']);
   });
   it('los recursos se reportan no operativos mientras su servicio no esté conectado', async () => {
-    content.activeLesson.mockResolvedValue({ ...lessons[0], secciones: [{ tipo: 'recurso', recurso: 'simulador' }, { tipo: 'recurso', recurso: 'cuestionario' }] });
+    content.activeLesson.mockResolvedValue({ ...lessons[0], secciones: [{ tipo: 'recurso', recurso: 'simulador' }, { tipo: 'recurso', recurso: 'cuestionario' }, { tipo: 'recurso', recurso: 'flashcards' }] });
     const result = await service().lesson(user, lessons[0]._id.toHexString());
-    expect(result.secciones).toEqual([{ tipo: 'recurso', recurso: 'simulador', operativo: false }, { tipo: 'recurso', recurso: 'cuestionario', operativo: false }]);
+    expect(result.secciones).toEqual([{ tipo: 'recurso', recurso: 'simulador', operativo: false }, { tipo: 'recurso', recurso: 'cuestionario', operativo: false }, { tipo: 'recurso', recurso: 'flashcards', operativo: true }]);
   });
   it('lección inexistente o inactiva: 404 y ids inválidos: 400', async () => {
     content.activeLesson.mockResolvedValue(null);

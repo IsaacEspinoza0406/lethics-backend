@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import { configureApp } from '../src/configure-app';
 import { AccessTokenService } from '../src/infrastructure/security/access-token.service';
-import { ModuleProgressPort } from '../src/modules/learning/application/module-progress';
+import { ModuleProgressPort } from '../src/modules/module-access/application/module-progress';
 import { LearningModule } from '../src/modules/learning/learning.module';
 import { optionalMongoTestScope } from './integration-isolation';
 import { courseFixture, lessonFixture, moduleFixture } from './learning-fixtures';
@@ -118,7 +118,7 @@ const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops
     expect(response.body.secciones).toEqual([
       { tipo: 'titulo', texto: 'Objetivo sintético' }, { tipo: 'parrafo', texto: 'Texto sintético de la lección.' }, { tipo: 'lista', ordenada: true, items: ['Primero', 'Segundo'] },
       { tipo: 'tabla', encabezados: ['Columna A', 'Columna B'], filas: [['a1', 'b1'], ['a2', '']] }, { tipo: 'destacado', variante: 'nota', texto: 'Nota sintética.' },
-      { tipo: 'recurso', recurso: 'flashcards', operativo: false },
+      { tipo: 'recurso', recurso: 'flashcards', operativo: true },
     ]);
     expect(response.headers['cache-control']).toBe('no-store');
   });
