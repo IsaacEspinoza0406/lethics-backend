@@ -138,6 +138,10 @@ const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops
     await get(`modulos/${s.modules[0]._id}/lecciones`).expect(503);
     const lonely = await scenario(); completed.delete(lonely.course._id.toHexString());
     await get(`cursos/${lonely.course._id}/modulos`).expect(503);
+    // El módulo 1 siempre está abierto: no depende del progreso. Los demás sí.
+    expect((await get(`modulos/${lonely.modules[0]._id}/lecciones`).expect(200)).body.items).toHaveLength(10);
+    await get(`lecciones/${lonely.lessons[0]._id}`).expect(200);
+    await get(`modulos/${lonely.modules[1]._id}/lecciones`).expect(503);
   });
   it('no filtra secretos ni datos internos en las respuestas ni en los registros', async () => {
     const s = await scenario(), response = await get(`lecciones/${s.lessons[0]._id}`).expect(200);

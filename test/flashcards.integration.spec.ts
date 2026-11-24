@@ -88,6 +88,8 @@ const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops
     const bad = await get(`modulos/${s.modules[0]._id}/flashcards`).expect(503); expect(bad.text).not.toMatch(/Concepto sintético|Mongo/i);
     const lonely = await scenario(); completed.delete(lonely.course._id.toHexString());
     await get(`modulos/${lonely.modules[1]._id}/flashcards`).expect(503);
+    // El módulo 1 siempre está abierto: su mazo no depende del progreso.
+    expect((await get(`modulos/${lonely.modules[0]._id}/flashcards`).expect(200)).body.items).toHaveLength(10);
   });
   it('no filtra secretos ni datos internos en las respuestas ni en los registros', async () => {
     const s = await scenario(), response = await get(`modulos/${s.modules[0]._id}/flashcards`).expect(200);

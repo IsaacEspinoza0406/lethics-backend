@@ -109,6 +109,22 @@ describe('LearningService', () => {
     expect((await service().modules(user, course._id.toHexString())).items).toHaveLength(1);
     expect(progress.completedModules).not.toHaveBeenCalled();
   });
+  it('el módulo 1 siempre está abierto: sirve lecciones sin consultar el progreso, aunque este falle', async () => {
+    progress.completedModules.mockRejectedValue(new Error('progreso caído'));
+    content.activeLessons.mockResolvedValue([lessonFixture(modules[0]._id, 1)]);
+    content.activeLesson.mockResolvedValue(lessonFixture(modules[0]._id, 1));
+    const list = await service().lessons(user, modules[0]._id.toHexString());
+    expect(list.items).toHaveLength(1);
+    expect((await service().lesson(user, new Types.ObjectId().toHexString())).moduloId).toBe(modules[0]._id.toHexString());
+    expect(progress.completedModules).not.toHaveBeenCalled();
+    await expect(service().lessons(user, modules[1]._id.toHexString())).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+  it('el módulo 1 sigue exigiendo curso publicado y módulo activo', async () => {
+    content.module.mockResolvedValue({ ...modules[0], activo: false });
+    await expect(service().lessons(user, modules[0]._id.toHexString())).rejects.toBeInstanceOf(NotFoundException);
+    content.module.mockResolvedValue(modules[0]); content.publishedCourse.mockResolvedValue(null);
+    await expect(service().lessons(user, modules[0]._id.toHexString())).rejects.toBeInstanceOf(NotFoundException);
+  });
   it('curso no publicado: 404 en módulos y lecciones', async () => {
     await expect(service().modules(user, new Types.ObjectId().toHexString())).rejects.toBeInstanceOf(NotFoundException);
     content.publishedCourse.mockResolvedValue(null);

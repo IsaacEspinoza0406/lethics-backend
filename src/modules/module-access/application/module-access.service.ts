@@ -28,6 +28,8 @@ export class ModuleAccessService {
   async openModule(userId: string, moduleId: Types.ObjectId): Promise<Stored<CourseModule>> {
     const module = await this.content.module(moduleId);
     if (!module?.activo || !(await this.content.publishedCourse(module.cursoId))) throw new NotFoundException('Módulo no disponible.');
+    // The first module is always open: it needs no progress, so it keeps working while progress is unavailable.
+    if (module.orden === 1) return module;
     const open = await this.unlocked(userId, module.cursoId, await this.content.courseModules(module.cursoId));
     if (!open.has(module._id.toHexString())) throw new ForbiddenException('Completa el módulo anterior para acceder a este módulo.');
     return module;
