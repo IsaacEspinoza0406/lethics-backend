@@ -99,9 +99,27 @@ Los binarios quedan fuera de MongoDB. Las respuestas públicas omiten referencia
 ### Consultas que Backend A exporta
 
 - [ProjectSubmissionPort](src/modules/projects/application/project-ports.ts): `hasValidSubmission(usuarioId: string, cursoId: string): Promise<boolean>`, exportado por ProjectsModule. Comprueba una entrega registrada propia con estructura válida; no exige aprobación docente. Validez al registro no equivale a reinspección permanente de archivos/enlaces.
-- [AssessmentResultsPort](src/modules/assessments/application/assessment-context.ts): `hasPassedFinalExam(usuarioId: string, cursoId: string): Promise<boolean>`, exportado por AssessmentsModule. Consulta un resultado aprobado de examen final del estudiante/curso, incluidas versiones históricas. No modifica progreso.
+- [AssessmentResultsPort](src/modules/assessments/application/assessment-context.ts), exportado por AssessmentsModule y provisto por AssessmentsService, ofrece `hasPassedFinalExam(usuarioId: string, cursoId: string): Promise<boolean>` y `quizResults(usuarioId: string, cursoId: string): Promise<QuizResult[]>`. La consulta del examen final conserva su implementación y contrato existentes. Ninguna operación modifica progreso.
 
 `false` significa ausencia de entrega/aprobación, no fallo de dependencia. Las fallas se propagan y terminan en 503 sanitizado cuando se atiende HTTP. Son consultas internas para consumidores confiables: el llamador debe usar identidad autorizada y validar pertenencia de recursos.
+
+#### Resultados de cuestionarios para progreso
+
+```typescript
+interface QuizResult { moduloId: string; aprobado: boolean }
+// AssessmentResultsPort:
+quizResults(usuarioId: string, cursoId: string): Promise<QuizResult[]>;
+```
+
+La consulta devuelve un resultado por módulo con al menos un intento completo y coherente del estudiante/curso. `aprobado` es verdadero si algún intento válido alcanzó el 70%, incluso en otra versión histórica; un reprobado posterior no elimina esa aprobación. Si todos reprobaron, el módulo aparece con `aprobado: false`. La presencia del módulo acredita presentación; Backend B puede usarla para la regla de la lección 10, sin confundirla con aprobación del módulo ni finalización del curso.
+
+`[]` significa que no existen intentos válidos para esos IDs. MongoDB desconectado, colecciones sin preparar o errores de lectura/cierre del cursor producen ServiceUnavailableException (503); no se convierten en lista vacía ni se entregan resultados parciales. IDs inválidos producen BadRequestException (400).
+
+La lectura filtra estudiante y curso, enlaza cada intento con su evaluación histórica de tipo cuestionario y comprueba coincidencia de curso, módulo y versión. Reutiliza la validación del historial y el motor existente para verificar respuestas completas, IDs/opciones, cantidad de aciertos y resultado persistido, sin escribir ni recalificar los documentos. Se excluyen intentos incompletos, inconsistentes o huérfanos y exámenes finales, incluso si un documento inválido declara un módulo. No se exige disponibilidad/publicación actual ni se consulta progreso: la evidencia histórica permanece independiente del desbloqueo actual.
+
+Solo se devuelven `moduloId` y `aprobado`, ordenados por ID de módulo, no por orden pedagógico. No salen preguntas, respuestas, porcentajes, IDs de intentos o claves correctas. La consulta recorre el historial mediante cursor y mantiene en memoria únicamente el resumen por módulo. Su coste crece con los intentos: medir consultas e índices antes de optimizar en producción; este incremento no instala índices.
+
+Backend B debe inyectar el puerto importando AssessmentsModule en el consumidor autorizado y usar el ID validado del estudiante. Debe comprobar curso/módulo y permisos desde sus propios servicios. La existencia del puerto no conecta automáticamente proveedores de progreso, no publica un endpoint y no habilita el examen. Al integrar progreso, conservar el cableado acíclico descrito abajo; no importar mutuamente los módulos completos. Los dobles de pruebas o implementaciones externas de AssessmentResultsPort deben incorporar el método nuevo.
 
 ## Cableado NestJS y ejemplo de consumo
 
@@ -125,11 +143,12 @@ export class StudentCourseResults {
   ) {}
 
   async read(user: Readonly<AuthenticatedUser>, cursoId: string) {
-    const [examenAprobado, proyectoEntregado] = await Promise.all([
+    const [cuestionarios, examenAprobado, proyectoEntregado] = await Promise.all([
+      this.assessments.quizResults(user.id, cursoId),
       this.assessments.hasPassedFinalExam(user.id, cursoId),
       this.projects.hasValidSubmission(user.id, cursoId),
     ]);
-    return { examenAprobado, proyectoEntregado };
+    return { cuestionarios, examenAprobado, proyectoEntregado };
   }
 }
 ```

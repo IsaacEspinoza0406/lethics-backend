@@ -25,8 +25,12 @@ export abstract class AssessmentContextPort {
   }
 }
 /** Trusted backend consumer; this is not an HTTP endpoint or a progress mutation. */
+export interface QuizResult { moduloId: string; aprobado: boolean }
 export abstract class AssessmentResultsPort {
   abstract hasPassedFinalExam(usuarioId: string, cursoId: string): Promise<boolean>;
+  /** One entry per module with a complete, consistent quiz attempt, across historical versions.
+   * Empty means no valid attempts; storage failures must throw, never masquerade as an empty list. */
+  abstract quizResults(usuarioId: string, cursoId: string): Promise<QuizResult[]>;
 }
 @Injectable()
 export class UnintegratedAssessmentContext extends AssessmentContextPort {
