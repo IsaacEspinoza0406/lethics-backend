@@ -184,4 +184,40 @@ describe('LearningService', () => {
   it('el proveedor de progreso por defecto responde 503', async () => {
     await expect(new UnintegratedModuleProgress().completedModules(user, course._id.toHexString())).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
+  it('con el proveedor de progreso por defecto, el módulo 1 funciona y los siguientes responden 503', async () => {
+    content.activeLessons.mockResolvedValue([lessonFixture(modules[0]._id, 1)]);
+    content.activeLesson.mockResolvedValue(lessonFixture(modules[0]._id, 1));
+    const contentService = content as unknown as LearningContentService;
+    const unintegrated = new LearningService(contentService, new ModuleAccessService(contentService, new UnintegratedModuleProgress()));
+    expect((await unintegrated.lessons(user, modules[0]._id.toHexString())).items).toHaveLength(1);
+    expect((await unintegrated.lesson(user, new Types.ObjectId().toHexString())).moduloId).toBe(modules[0]._id.toHexString());
+    await expect(unintegrated.lessons(user, modules[1]._id.toHexString())).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+  it('el progreso de un estudiante no abre módulos a otro', async () => {
+    const other = new Types.ObjectId().toHexString();
+    progress.completedModules.mockImplementation(async (student: string) => (student === user ? [modules[0]._id.toHexString()] : []));
+    expect((await service().modules(user, course._id.toHexString())).items.map((m) => m.disponible)).toEqual([true, true, false]);
+    expect((await service().modules(other, course._id.toHexString())).items.map((m) => m.disponible)).toEqual([true, false, false]);
+    await expect(service().lessons(user, modules[1]._id.toHexString())).resolves.toMatchObject({ moduloId: modules[1]._id.toHexString() });
+    await expect(service().lessons(other, modules[1]._id.toHexString())).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('LearningContentService: secuencia de módulos', () => {
+  const course = courseFixture();
+  const read = (found: unknown[]) => {
+    const model = { find: () => ({ sort: () => ({ lean: async () => found }) }) };
+    return new LearningContentService({} as never, model as never, {} as never).courseModules(course._id);
+  };
+  it('acepta órdenes distintos', async () => {
+    await expect(read([moduleFixture(course._id, 1), moduleFixture(course._id, 2)])).resolves.toHaveLength(2);
+  });
+  it.each([
+    ['dos módulos activos con orden 1', [1, 1], true],
+    ['un orden posterior repetido', [1, 2, 2], true],
+    ['un duplicado inactivo', [1, 1], false],
+  ])('rechaza %s', async (_name, orders, activo) => {
+    const found = orders.map((orden, i) => moduleFixture(course._id, orden, { activo: activo || i === 0 }));
+    await expect(read(found)).rejects.toThrow('Contenido educativo incompatible');
+  });
 });

@@ -15,10 +15,12 @@ import { courseFixture, lessonFixture, moduleFixture } from './learning-fixtures
 const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops');
 (scope ? describe : describe.skip)('Contenido educativo: MongoDB propio y HTTP; progreso de fixture', () => {
   let app: INestApplication, connection: Connection, access: string, otherRoleAccess: string;
-  const user = new Types.ObjectId(), otherRole = new Types.ObjectId(), completed = new Map<string, string[]>();
+  const user = new Types.ObjectId(), otherRole = new Types.ObjectId(), otherStudent = new Types.ObjectId(), completed = new Map<string, string[]>();
+  let otherStudentAccess: string;
   const logs: string[] = [], spies: jest.SpyInstance[] = [];
-  const progress = { completedModules: jest.fn(async (_user: string, course: string): Promise<readonly string[]> => {
-    void _user; const modules = completed.get(course); if (!modules) throw new ServiceUnavailableException('Progreso de fixture no disponible'); return modules;
+  // Entries keyed `student:course` belong to one student; entries keyed by course are the default for everyone.
+  const progress = { completedModules: jest.fn(async (student: string, course: string): Promise<readonly string[]> => {
+    const modules = completed.get(`${student}:${course}`) ?? completed.get(course); if (!modules) throw new ServiceUnavailableException('Progreso de fixture no disponible'); return modules;
   }) };
   @Global()
   @Module({ providers: [{ provide: getConnectionToken(), useFactory: () => connection }], exports: [getConnectionToken()] })
@@ -29,13 +31,14 @@ const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops
     const temporary = await scope!.open(); connection = mongoose.createConnection().setClient(temporary.client);
     // Only approved collections, created in the owned UUID database.
     for (const name of ['usuarios', 'cursos', 'modulos', 'lecciones']) await temporary.db.createCollection(name);
-    await temporary.db.collection('usuarios').insertMany([{ _id: user, rol: 'estudiante' }, { _id: otherRole, rol: 'no-aprobado' }].map(({ _id, rol }, i) => ({ _id, nombre: 'Sintético', correo: `learning-${i}@example.test`, rol, verificadoEn: new Date(), contraseñaHash: 'synthetic-private-password-hash' })));
+    await temporary.db.collection('usuarios').insertMany([{ _id: user, rol: 'estudiante' }, { _id: otherRole, rol: 'no-aprobado' }, { _id: otherStudent, rol: 'estudiante' }].map(({ _id, rol }, i) => ({ _id, nombre: 'Sintético', correo: `learning-${i}@example.test`, rol, verificadoEn: new Date(), contraseñaHash: 'synthetic-private-password-hash' })));
     const settings = { NODE_ENV: 'test', AUTH_HTTP_ENABLED: false, JWT_ACCESS_SECRET_BASE64: randomBytes(32).toString('base64'), JWT_ACCESS_ISSUER: 'learning-test', JWT_ACCESS_AUDIENCE: 'learning-test', JWT_ACCESS_TTL_SECONDS: 900,
       VERIFICATION_CODE_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), RATE_LIMIT_HMAC_KEY_BASE64: randomBytes(32).toString('base64'), VERIFICATION_ACCOUNT_FAILURES_PER_HOUR: 20, VERIFICATION_ACCOUNT_EMISSIONS_PER_HOUR: 5 };
     const module = await Test.createTestingModule({ imports: [TemporaryConnectionModule, ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => settings] }), LearningModule] })
       .overrideProvider(ModuleProgressPort).useValue(progress).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
     access = app.get(AccessTokenService).sign(user.toString()); otherRoleAccess = app.get(AccessTokenService).sign(otherRole.toString());
+    otherStudentAccess = app.get(AccessTokenService).sign(otherStudent.toString());
   }, 60000);
   afterAll(async () => {
     try { if (app) await app.close(); } finally { try { await scope?.close(); } finally { try { if (connection) await connection.close(); } finally { spies.forEach((spy) => spy.mockRestore()); } } }
@@ -142,6 +145,21 @@ const scope = optionalMongoTestScope(process.env.LETHICS_IDENTITY_TEST_URI, 'ops
     expect((await get(`modulos/${lonely.modules[0]._id}/lecciones`).expect(200)).body.items).toHaveLength(10);
     await get(`lecciones/${lonely.lessons[0]._id}`).expect(200);
     await get(`modulos/${lonely.modules[1]._id}/lecciones`).expect(503);
+  });
+  it('el progreso de un estudiante no abre módulos a otro', async () => {
+    const s = await scenario(); completed.set(`${user}:${s.course._id}`, [s.modules[0]._id.toHexString()]);
+    const modules = `cursos/${s.course._id}/modulos`, locked = `modulos/${s.modules[1]._id}/lecciones`;
+    expect((await get(modules).expect(200)).body.items.map((m: { disponible: boolean }) => m.disponible)).toEqual([true, true, false, false, false]);
+    expect((await get(modules, otherStudentAccess).expect(200)).body.items.map((m: { disponible: boolean }) => m.disponible)).toEqual([true, false, false, false, false]);
+    await get(locked).expect(200); await get(locked, otherStudentAccess).expect(403);
+    await get(`lecciones/${s.second[0]._id}`, otherStudentAccess).expect(403);
+  });
+  it.each([0, 2])('un orden de módulo repetido (posición %s) produce 503 sin abrir ningún módulo', async (index) => {
+    const s = await scenario();
+    await raw('modulos').insertOne(moduleFixture(s.course._id, s.modules[index].orden));
+    for (const path of [`cursos/${s.course._id}/modulos`, `modulos/${s.modules[0]._id}/lecciones`, `lecciones/${s.lessons[0]._id}`, `modulos/${s.modules[1]._id}/lecciones`]) {
+      const response = await get(path).expect(503); expect(response.text).not.toMatch(/Módulo sintético|Lección sintética|Mongo/i);
+    }
   });
   it('no filtra secretos ni datos internos en las respuestas ni en los registros', async () => {
     const s = await scenario(), response = await get(`lecciones/${s.lessons[0]._id}`).expect(200);

@@ -30,10 +30,15 @@ export class LearningContentService {
     const found = await this.courses.findOne({ _id: id, estado: 'publicado' }).lean();
     return found ? this.checked(validCourse, found) : null;
   }
-  /** All modules of the course (active or not) by `orden`: the unlock rule needs the inactive ones too. */
+  /**
+   * All modules of the course (active or not) by `orden`: the unlock rule needs the inactive ones too.
+   * A repeated `orden` makes the sequence ambiguous, so the whole course is treated as incompatible.
+   */
   async courseModules(cursoId: Types.ObjectId): Promise<Stored<CourseModule>[]> {
     const found = await this.modules.find({ cursoId }).sort({ orden: 1, _id: 1 }).lean();
-    return found.map((m) => this.checked(validModule, m));
+    const modules = found.map((m) => this.checked(validModule, m));
+    if (new Set(modules.map((m) => m.orden)).size !== modules.length) throw new Error('Contenido educativo incompatible');
+    return modules;
   }
   async module(id: Types.ObjectId): Promise<Stored<CourseModule> | null> {
     const found = await this.modules.findOne({ _id: id }).lean();
