@@ -3,7 +3,7 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Connection, Model, Types } from 'mongoose';
 import { Answer, Attempt, Evaluation, InvalidAnswersError, gradeAnswers, normalizeAnswers, validEvaluation } from '../domain/assessment';
 import { calculateGrade } from '../domain/grading';
-import { AssessmentContextPort } from './assessment-context';
+import { AssessmentContextPort, AssessmentResultsPort, QuizResult } from './assessment-context';
 import { hasAttemptUniqueness } from '../infrastructure/assessment-indexes';
 import { FINAL_EXAM_ATTEMPTS, finalAttemptId } from '../domain/final-exam';
 
@@ -15,7 +15,7 @@ type StoredEvaluation = Evaluation & { _id: Types.ObjectId };
 type StoredAttempt = Attempt & { _id: Types.ObjectId };
 
 @Injectable()
-export class AssessmentsService {
+export class AssessmentsService implements AssessmentResultsPort {
   constructor(@InjectConnection() private readonly connection: Connection,
     @InjectModel('Evaluacion') private readonly evaluations: Model<Evaluation>, @InjectModel('IntentoEvaluacion') private readonly attempts: Model<Attempt>,
     private readonly context: AssessmentContextPort) {}
@@ -170,6 +170,44 @@ export class AssessmentsService {
         { $limit: 1 }, { $project: { _id: 1 } },
       ]);
       return results.length > 0;
+    });
+  }
+  async quizResults(user: string, course: string): Promise<QuizResult[]> {
+    return this.controlled(async () => {
+      const usuarioId = this.id(user), cursoId = this.id(course);
+      await this.storage();
+      // Stream histories instead of materializing all repeated attempts in memory.
+      // Both collections belong to Backend A; availability/progress is deliberately not consulted.
+      const cursor = this.attempts.aggregate<StoredAttempt & { evaluacion: StoredEvaluation }>([
+        { $match: { usuarioId, cursoId, moduloId: { $type: 'objectId' } } },
+        { $lookup: { from: 'evaluaciones', localField: 'evaluacionId', foreignField: '_id', as: 'evaluacion' } },
+        { $unwind: '$evaluacion' },
+        { $match: { 'evaluacion.tipo': 'cuestionario' } },
+        { $project: { _id: 1, usuarioId: 1, evaluacionId: 1, cursoId: 1, moduloId: 1, version: 1, solicitudId: 1,
+          respuestas: 1, aciertos: 1, total: 1, porcentaje: 1, aprobado: 1, fecha: 1, evaluacion: 1 } },
+      ]).cursor({ batchSize: 100 });
+      const results = new Map<string, boolean>();
+      try {
+        for await (const record of cursor) {
+          // Pure validation only: malformed historical documents are excluded, not repaired.
+          // Cursor/network errors remain outside this block and propagate as controlled 503.
+          try {
+            const evaluation = record.evaluacion;
+            if (!validEvaluation(evaluation) || evaluation.tipo !== 'cuestionario' || !(evaluation._id instanceof Types.ObjectId) ||
+              !(record.usuarioId instanceof Types.ObjectId) || !record.usuarioId.equals(usuarioId) ||
+              !(record.cursoId instanceof Types.ObjectId) || !record.cursoId.equals(cursoId) || !evaluation.cursoId.equals(cursoId) ||
+              !(record.moduloId instanceof Types.ObjectId) || !record.moduloId.equals(evaluation.moduloId!) ||
+              !(record.evaluacionId instanceof Types.ObjectId) || !record.evaluacionId.equals(evaluation._id) || record.version !== evaluation.version ||
+              typeof record.solicitudId !== 'string' || record.solicitudId.length > 128) continue;
+            this.attemptView(record);
+            const expected = gradeAnswers(evaluation.preguntas, record.respuestas);
+            if (record.aciertos !== expected.aciertos || record.total !== expected.total || Number(record.porcentaje) !== expected.porcentaje || record.aprobado !== expected.aprobado) continue;
+            const moduloId = record.moduloId.toHexString();
+            results.set(moduloId, results.get(moduloId) === true || expected.aprobado);
+          } catch { /* Invalid/incomplete attempt or evaluation; never count it as submitted. */ }
+        }
+      } finally { await cursor.close(); }
+      return [...results].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([moduloId, aprobado]) => ({ moduloId, aprobado }));
     });
   }
 }
