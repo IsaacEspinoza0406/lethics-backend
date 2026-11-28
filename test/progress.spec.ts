@@ -5,6 +5,7 @@ import { ModuleAccessService } from '../src/modules/module-access/application/mo
 import { LessonProgressService } from '../src/modules/progress/application/lesson-progress.service';
 import { LessonProgress, requiredActivity, validLessonProgress } from '../src/modules/progress/domain/lesson-progress';
 import { hasLessonProgressUniqueness } from '../src/modules/progress/infrastructure/lesson-progress-indexes';
+import { LessonProgressStore } from '../src/modules/progress/infrastructure/lesson-progress.store';
 import { courseFixture, lessonFixture, moduleFixture, sampleBlocks } from './learning-fixtures';
 
 const record = (overrides: Record<string, unknown> = {}) => ({
@@ -56,8 +57,9 @@ describe('LessonProgressService', () => {
   const records = { updateOne: jest.fn(), findOne: jest.fn(), find: jest.fn() };
   const collections = jest.fn(), indexes = jest.fn();
   const connection = { readyState: 1, db: { listCollections: () => ({ toArray: collections }), collection: () => ({ listIndexes: () => ({ toArray: indexes }) }) } };
-  const service = (readyState = 1) => new LessonProgressService({ ...connection, readyState } as unknown as Connection,
-    records as unknown as Model<LessonProgress>, content as unknown as LearningContentService, access as unknown as ModuleAccessService);
+  const service = (readyState = 1) => new LessonProgressService(
+    new LessonProgressStore({ ...connection, readyState } as unknown as Connection, records as unknown as Model<LessonProgress>),
+    content as unknown as LearningContentService, access as unknown as ModuleAccessService);
   const stored = (overrides: Record<string, unknown> = {}) => record({ usuarioId: user, leccionId: reading._id, ...overrides });
   const userId = user.toHexString(), lessonId = reading._id.toHexString();
 

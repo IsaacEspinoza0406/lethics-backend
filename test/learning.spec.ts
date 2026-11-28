@@ -153,7 +153,7 @@ describe('LearningService', () => {
   it('los recursos se reportan no operativos mientras su servicio no esté conectado', async () => {
     content.activeLesson.mockResolvedValue({ ...lessons[0], secciones: [{ tipo: 'recurso', recurso: 'simulador' }, { tipo: 'recurso', recurso: 'cuestionario' }, { tipo: 'recurso', recurso: 'flashcards' }] });
     const result = await service().lesson(user, lessons[0]._id.toHexString());
-    expect(result.secciones).toEqual([{ tipo: 'recurso', recurso: 'simulador', operativo: false }, { tipo: 'recurso', recurso: 'cuestionario', operativo: false }, { tipo: 'recurso', recurso: 'flashcards', operativo: true }]);
+    expect(result.secciones).toEqual([{ tipo: 'recurso', recurso: 'simulador', operativo: true }, { tipo: 'recurso', recurso: 'cuestionario', operativo: false }, { tipo: 'recurso', recurso: 'flashcards', operativo: true }]);
   });
   it('lección inexistente o inactiva: 404 y ids inválidos: 400', async () => {
     content.activeLesson.mockResolvedValue(null);

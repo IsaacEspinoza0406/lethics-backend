@@ -26,7 +26,7 @@ export type Stored<T> = T & { _id: Types.ObjectId };
  * are not presented as working activities before the simulator or the quiz integration exists.
  * Extend only when the corresponding service is really available.
  */
-export const OPERATIONAL_RESOURCES: ReadonlySet<ResourceKind> = new Set<ResourceKind>(['flashcards']);
+export const OPERATIONAL_RESOURCES: ReadonlySet<ResourceKind> = new Set<ResourceKind>(['flashcards', 'simulador']);
 
 const isText = (value: unknown, max: number, allowEmpty = false): value is string =>
   typeof value === 'string' && value.length <= max && (allowEmpty || /\S/.test(value));
