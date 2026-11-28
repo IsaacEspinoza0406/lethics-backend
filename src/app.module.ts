@@ -11,6 +11,7 @@ import { UsersModule } from './modules/users/users.module';
 import { AssessmentsModule } from './modules/assessments/assessments.module';
 import { LearningModule } from './modules/learning/learning.module';
 import { FlashcardsModule } from './modules/flashcards/flashcards.module';
+import { ProgressModule } from './modules/progress/progress.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { FlashcardsModule } from './modules/flashcards/flashcards.module';
     AssessmentsModule,
     LearningModule,
     FlashcardsModule,
+    ProgressModule,
   ],
 })
 export class AppModule {}
